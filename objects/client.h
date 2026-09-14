@@ -35,6 +35,7 @@
 #include "color.h"
 #include "objects/window.h"
 #include "shadow.h"
+#include "rounded.h"
 
 /* Forward declarations */
 typedef struct screen_t screen_t;
@@ -168,9 +169,36 @@ struct client_t
     shadow_config_t *shadow_config;
     /** Shadow scene nodes */
     shadow_nodes_t shadow;
+    /** Rounded corner configuration (NULL = use defaults) */
+    rounded_config_t *rounded_config;
+    /** Rounded corner scene nodes (unused for clients: they use true crop) */
+    rounded_nodes_t rounded;
+    /** True rounded-corner crop state (content, titlebars, border ring) */
+    rounded_crop_t crop;
+    /** Per-buffer rounded copies for child (sub)surfaces in the client tree.
+     * Firefox renders its whole window in a wl_subsurface, so rounding only
+     * the toplevel leaves square corners in the pixels actually visible.
+     * These entries crop every other scene buffer under the client. */
+    struct client_crop_child_entry {
+        Client *c;                       /**< Owning client (commit hook) */
+        struct wlr_scene_buffer *sb;     /**< Scene buffer node displaying the copy */
+        struct wlr_surface *surface;     /**< Surface supplying content (commit hook) */
+        struct wlr_buffer *copy;         /**< Owned cropped copy replacing sb->buffer */
+        struct wlr_buffer *raw;          /**< Last raw client buffer the copy was made from */
+        double origin_x, origin_y;       /**< Buffer->node-local mapping used for the copy */
+        double scale_x, scale_y;         /**< Buffer->node-local mapping used for the copy */
+        struct wl_listener commit;       /**< Commit hook: re-crop this child */
+        struct wl_listener destroy;      /**< Surface destroy: drop hooks cleanly */
+        bool active;                     /**< Copy currently displayed on sb */
+        bool hooked;                     /**< commit listener is registered */
+        bool hooked_destroy;             /**< destroy listener is registered */
+    } crop_children[8];
+    int n_crop_children;
     /** Wayland listeners */
     struct wl_listener initial_commit; /* For initial XDG commit before scene surface exists */
     struct wl_listener commit;         /* For subsequent commits after scene surface exists */
+    struct wl_listener crop_commit;    /* Rounded crop: re-crops the toplevel buffer after wlroots applies it */
+    struct wl_listener content_commit; /* Emits "surface::commit" to Lua for content-driven refresh */
     struct wl_listener map;
     struct wl_listener maximize;
     struct wl_listener unmap;

@@ -11,6 +11,7 @@
 #include "common/util.h"
 #include "../globalconf.h"
 #include "../shadow.h"
+#include "../window.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -202,6 +203,27 @@ static bool border_point_accepts_input(struct wlr_scene_buffer *buffer,
  * Returns an ARGB32 surface that caller must destroy.
  * Returns NULL if border_width is 0 or allocation fails.
  */
+/* Stroke a rounded-rect path clockwise with per-corner radii (mirrors
+ * gears.shape.rounded_rect). A corner radius of 0 makes a right angle at
+ * that corner. The path is left open in the caller. */
+static void
+drawin_path_rounded_rect(cairo_t *cr, double x, double y, double w, double h,
+			 const double rad[4])
+{
+	static const double pi = 3.14159265358979323846;
+	double r0 = rad[0] > 0.0 ? rad[0] : 0.0;
+	double r1 = rad[1] > 0.0 ? rad[1] : 0.0;
+	double r2 = rad[2] > 0.0 ? rad[2] : 0.0;
+	double r3 = rad[3] > 0.0 ? rad[3] : 0.0;
+	cairo_move_to(cr, x + r0, y);
+	cairo_arc(cr, x + w - r1, y + r1, r1, -pi / 2, 0);
+	cairo_arc(cr, x + w - r3, y + h - r3, r3, 0, pi / 2);
+	cairo_line_to(cr, x + r2, y + h);
+	cairo_arc(cr, x + r2, y + h - r2, r2, pi / 2, pi);
+	cairo_arc(cr, x + r0, y + r0, r0, pi, 3 * pi / 2);
+	cairo_close_path(cr);
+}
+
 static cairo_surface_t *
 drawin_render_border(drawin_t *d)
 {
@@ -232,6 +254,37 @@ drawin_render_border(drawin_t *d)
 	/* Fallback: render simple rectangular border (no shape) */
 	int total_w = d->width + 2 * bw;
 	int total_h = d->height + 2 * bw;
+	const rounded_config_t *rcfg =
+		rounded_get_effective_config(d->rounded_config, true);
+	double r_out[4], r_in[4];
+	bool any_outer = false;
+
+	/* Clamp each outer arc so it fits both the outer frame and the content
+	 * area without overlapping its neighbours. */
+	{
+		double maxr = (total_w < total_h ? total_w : total_h) / 2.0;
+		for (int i = 0; i < 4; i++) {
+			r_out[i] = (rcfg && rounded_config_active(rcfg))
+				? (double)rcfg->radii[i] : 0.0;
+			if (r_out[i] < 0)
+				r_out[i] = 0;
+			if (r_out[i] > maxr)
+				r_out[i] = maxr;
+			if (r_out[i] > 0.5)
+				any_outer = true;
+		}
+	}
+	for (int i = 0; i < 4; i++) {
+		r_in[i] = r_out[i] - bw;
+		if (r_in[i] < 0)
+			r_in[i] = 0;
+	}
+	{
+		double maxr = (d->width < d->height ? d->width : d->height) / 2.0;
+		for (int i = 0; i < 4; i++)
+			if (r_in[i] > maxr)
+				r_in[i] = maxr;
+	}
 
 	cairo_surface_t *surface = cairo_image_surface_create(
 		CAIRO_FORMAT_ARGB32, total_w, total_h);
@@ -242,21 +295,118 @@ drawin_render_border(drawin_t *d)
 
 	cairo_t *cr = cairo_create(surface);
 
-	/* Draw rectangular border ring using even-odd fill rule */
+	/* Draw the border ring using even-odd fill rule. When the drawin has
+	 * compositor rounding active, the ring's outer contour follows the
+	 * same per-corner arcs as the content mask (and the inner cutout
+	 * follows them insetted by the border width), so the contour does not
+	 * stay square around a rounded window. */
 	color_t *bc = &d->border_color_parsed;
 	cairo_set_source_rgba(cr,
 		bc->red / 255.0, bc->green / 255.0,
 		bc->blue / 255.0, bc->alpha / 255.0);
 
-	/* Outer rectangle */
-	cairo_rectangle(cr, 0, 0, total_w, total_h);
-	/* Inner cutout */
-	cairo_rectangle(cr, bw, bw, d->width, d->height);
+	/* Outer contour */
+	if (any_outer)
+		drawin_path_rounded_rect(cr, 0, 0, total_w, total_h, r_out);
+	else
+		cairo_rectangle(cr, 0, 0, total_w, total_h);
+	/* Inner cutout (per-corner radii follow the outer arcs insetted by bw) */
+	drawin_path_rounded_rect(cr, bw, bw, d->width, d->height, r_in);
 	cairo_set_fill_rule(cr, CAIRO_FILL_RULE_EVEN_ODD);
 	cairo_fill(cr);
 
 	cairo_destroy(cr);
 	return surface;
+}
+
+/** Coverage alpha of the rounded-rect corner cut (mirror of rounded.c).
+ * Pixels farther than `r` from the corner point are the cut corner. */
+static float
+drawin_corner_cut_alpha(float d, float r)
+{
+	if (d <= r - 0.5f)
+		return 0.0f;
+	if (d >= r + 0.5f)
+		return 1.0f;
+	float t = (d - (r - 0.5f)) / 1.0f;
+	return t * t * (3.0f - 2.0f * t);
+}
+
+/** Apply a real alpha cut to the corner pixels of an ARGB32 surface.
+ * Unlike the client corner mask (which fakes the cut by painting a solid
+ * color), drawins own their content buffer so the corners can be made
+ * truly transparent, letting the desktop show through seamlessly.
+ * The radii are measured from the surface corners; the quarter-circle is
+ * centered on each corner (mirrors gears.shape.rounded_rect). A per-corner
+ * radius of 0 leaves that corner untouched. */
+static void
+drawin_punch_rounded_corners(cairo_surface_t *surface, const int radii[4])
+{
+	if (cairo_surface_get_type(surface) != CAIRO_SURFACE_TYPE_IMAGE ||
+	    cairo_image_surface_get_format(surface) != CAIRO_FORMAT_ARGB32)
+		return;
+
+	unsigned char *data = cairo_image_surface_get_data(surface);
+	if (!data)
+		return;
+	cairo_surface_flush(surface);
+
+	int w = cairo_image_surface_get_width(surface);
+	int h = cairo_image_surface_get_height(surface);
+	int stride = cairo_image_surface_get_stride(surface);
+	int maxr = (w < h ? w : h) / 2;
+	int r[4];
+	bool any = false;
+
+	for (int i = 0; i < 4; i++) {
+		r[i] = radii[i];
+		if (r[i] < 0)
+			r[i] = 0;
+		if (r[i] > maxr)
+			r[i] = maxr;
+		if (r[i] > 0)
+			any = true;
+	}
+	if (!any)
+		return;
+
+	for (int corner = 0; corner < 4; corner++) {
+		if (r[corner] <= 0)
+			continue;
+		bool mirror_x = (corner == 1 || corner == 3);
+		bool mirror_y = (corner == 2 || corner == 3);
+		for (int ty = 0; ty < r[corner]; ty++) {
+			int y = mirror_y ? h - 1 - ty : ty;
+			unsigned char *row = data + y * stride;
+			for (int tx = 0; tx < r[corner]; tx++) {
+				/* Arc center sits at local (r, r) (the corner square's
+				 * inner corner); pixels farther than r from it form the
+				 * rounded-rect corner cut (mirrors rounded_render_corner). */
+				float dx = (float)(tx + 0.5f) - (float)r[corner];
+				float dy = (float)(ty + 0.5f) - (float)r[corner];
+				float d = sqrtf(dx * dx + dy * dy);
+				float keep = 1.0f - drawin_corner_cut_alpha(d, (float)r[corner]);
+				if (keep >= 1.0f)
+					continue;
+				int x = mirror_x ? w - 1 - tx : tx;
+				uint32_t *p = (uint32_t *)(row + x * 4);
+				uint32_t pv = *p;
+				uint32_t a = (pv >> 24) & 0xFF;
+				if (a == 0)
+					continue;
+				uint32_t rr = (pv >> 16) & 0xFF;
+				uint32_t gg = (pv >> 8) & 0xFF;
+				uint32_t bb = pv & 0xFF;
+				a = (uint32_t)(a * keep + 0.5f);
+				rr = (uint32_t)(rr * keep + 0.5f);
+				gg = (uint32_t)(gg * keep + 0.5f);
+				bb = (uint32_t)(bb * keep + 0.5f);
+				*p = (a << 24) | (rr << 16) | (gg << 8) | bb;
+			}
+		}
+	}
+
+	cairo_surface_mark_dirty(surface);
 }
 
 /** Ensure drawable has a surface with correct geometry.
@@ -628,6 +778,27 @@ drawin_refresh_drawable(drawin_t *drawin)
 			work_surface = masked_surface;
 	}
 
+	/* Compositor rounding for drawins: when it is enabled and Lua supplied
+	 * no shape, punch true alpha into the content corners (radius = corner
+	 * radius minus border width, matching the border ring's inner contour)
+	 * instead of overlaying a solid "cap" that colors whatever is behind.
+	 * Drawins with a Lua shape already handle their own transparency. */
+	if (!clipped_surface && !masked_surface) {
+		const rounded_config_t *rcfg = rounded_get_effective_config(
+			drawin->rounded_config, true);
+		if (rounded_config_active(rcfg)) {
+			int pr[4];
+			bool any = false;
+			for (int i = 0; i < 4; i++) {
+				pr[i] = rcfg->radii[i] - drawin->border_width;
+				if (pr[i] > 0)
+					any = true;
+			}
+			if (any)
+				drawin_punch_rounded_corners(work_surface, pr);
+		}
+	}
+
 	/* Create SHM buffer from the final surface
 	 * This uses the shared buffer implementation in drawable.c */
 	if (work_surface != d->surface) {
@@ -805,6 +976,12 @@ drawin_allocator(lua_State *L)
 	drawin->border_need_update = true;
 	drawin->border_color_parsed.initialized = false;
 
+	/* Inner hairline defaults come from the theme; the drawin toggle is
+	 * separate from the client one, width/color are shared. Rules/props
+	 * set later on the drawin (or its wibox wrapper) override these. */
+	drawin->border_inner_enabled = get_border_inner_drawin_enabled();
+	drawin->border_inner_width = get_border_inner_width();
+
 	/* Create shadow (compositor-level, replaces picom shadows)
 	 * Shadow is created initially but disabled - enabled when visible=true */
 	{
@@ -817,6 +994,10 @@ drawin_allocator(lua_State *L)
 			shadow_set_visible(&drawin->shadow, false);
 		}
 	}
+
+	/* Drawins round via the alpha punch in drawin_refresh_drawable plus the
+	 * radius-following border ring (drawin_render_border); the solid-color
+	 * mask overlay is only used for clients (see rounded.c). */
 
 	/* Create drawable object for rendering (AwesomeWM pattern)
 	 * Stack: [drawin] */
@@ -899,6 +1080,14 @@ drawin_wipe(drawin_t *w)
 	if (w->shadow_config) {
 		free(w->shadow_config);
 		w->shadow_config = NULL;
+	}
+
+	/* Rounded corner nodes are children of scene_tree and destroyed with it.
+	 * We own the texture buffers though and must free them. */
+	rounded_release(&w->rounded);
+	if (w->rounded_config) {
+		free(w->rounded_config);
+		w->rounded_config = NULL;
 	}
 
 	/* Destroy scene graph nodes */
@@ -1298,6 +1487,84 @@ luaA_drawin_set_border_color(lua_State *L, drawin_t *drawin)
 
 	/* Emit signal */
 	luaA_object_emit_signal(L, -3, "property::border_color", 0);
+
+	return 0;
+}
+
+/** drawin.border_inner_width - Get inner hairline width */
+static int
+luaA_drawin_get_border_inner_width(lua_State *L, drawin_t *drawin)
+{
+	lua_pushinteger(L, drawin->border_inner_width);
+	return 1;
+}
+
+/** drawin.border_inner_width - Set inner hairline width (0 = off) */
+static int
+luaA_drawin_set_border_inner_width(lua_State *L, drawin_t *drawin)
+{
+	int old_width = drawin->border_inner_width;
+	int new_width = (int)lua_tonumber(L, -1);
+
+	if (new_width < 0)
+		new_width = 0;
+
+	drawin->border_inner_width = new_width;
+
+	if (old_width != new_width) {
+		drawin->border_need_update = true;
+		luaA_object_emit_signal(L, -3, "property::border_inner_width", 0);
+	}
+
+	return 0;
+}
+
+/** drawin.border_inner_color - Get inner hairline color */
+static int
+luaA_drawin_get_border_inner_color(lua_State *L, drawin_t *drawin)
+{
+	if (drawin->border_inner_color.initialized) {
+		return luaA_pushcolor(L, &drawin->border_inner_color);
+	} else {
+		lua_pushnil(L);
+		return 1;
+	}
+}
+
+/** drawin.border_inner_color - Set inner hairline color */
+static int
+luaA_drawin_set_border_inner_color(lua_State *L, drawin_t *drawin)
+{
+	if (!luaA_tocolor(L, -1, &drawin->border_inner_color)) {
+		return luaL_error(L, "Invalid color format");
+	}
+
+	drawin->border_need_update = true;
+	luaA_object_emit_signal(L, -3, "property::border_inner_color", 0);
+
+	return 0;
+}
+
+/** drawin.border_inner_enabled - Get inner hairline on/off */
+static int
+luaA_drawin_get_border_inner_enabled(lua_State *L, drawin_t *drawin)
+{
+	lua_pushboolean(L, drawin->border_inner_enabled);
+	return 1;
+}
+
+/** drawin.border_inner_enabled - Set inner hairline on/off */
+static int
+luaA_drawin_set_border_inner_enabled(lua_State *L, drawin_t *drawin)
+{
+	bool enabled = luaA_checkboolean(L, -1);
+
+	if (enabled == drawin->border_inner_enabled)
+		return 0;
+
+	drawin->border_inner_enabled = enabled;
+	drawin->border_need_update = true;
+	luaA_object_emit_signal(L, -3, "property::border_inner_enabled", 0);
 
 	return 0;
 }
@@ -1707,6 +1974,86 @@ luaA_drawin_apply_geometry(drawin_t *drawin)
 	} */
 }
 
+/* macOS-style inner hairline for a drawin: a thin line hugging the content
+ * edge, above the content (the border ring sits below it). Input-transparent,
+ * zero-geometry pure decoration. border_inner_width == 0 turns it off.
+ * Called from drawin_border_refresh_single(), which itself only runs when
+ * the drawin's border_need_update flag is set, so this always re-renders. */
+static void
+drawin_innerline_refresh(drawin_t *d)
+{
+	const rounded_config_t *rcfg;
+	int radii[4], cw, ch, bw;
+	float eff[4];
+	double lw = d->border_inner_width;
+
+	cw = d->width;
+	ch = d->height;
+	bw = d->border_width;
+
+	/* Hide hairline when disabled or when the drawin has no surface yet */
+	if (!d->border_inner_enabled || lw <= 0.0 || cw <= 0 || ch <= 0
+			|| !d->scene_tree || !d->scene_buffer) {
+		if (d->innerline_buffer)
+			wlr_scene_node_set_enabled(&d->innerline_buffer->node, false);
+		return;
+	}
+
+	/* Hairline radii mirror the content punch gate (drawin_refresh_drawable):
+	 * an explicit corner_radius wins; a drawin carrying a Lua shape owns its
+	 * own geometry and gets a square hairline; only un-shaped drawins fall
+	 * back to the global drawin radius. Content radii == config radii minus
+	 * the outer border width, clamped exactly like drawin_render_border()
+	 * does. The renderer then insets these by the hairline width so its outer
+	 * edge shares the content's corner arcs. */
+	if (!d->rounded_config && (d->shape_clip || d->shape_bounding)) {
+		for (int i = 0; i < 4; i++)
+			radii[i] = 0;
+	} else {
+		rcfg = rounded_get_effective_config(d->rounded_config, true);
+		for (int i = 0; i < 4; i++) {
+			radii[i] = (rcfg && rounded_config_active(rcfg))
+				? (rcfg->radii[i] < 0 ? 0 : rcfg->radii[i]) : 0;
+			radii[i] -= bw;
+			if (radii[i] < 0)
+				radii[i] = 0;
+		}
+	}
+
+	if (d->border_inner_color.initialized)
+		color_to_floats(&d->border_inner_color, eff);
+	else {
+		const float *base = get_border_inner_color();
+		for (int i = 0; i < 4; i++)
+			eff[i] = base[i];
+	}
+
+	if (!d->innerline_buffer) {
+		d->innerline_buffer = wlr_scene_buffer_create(d->scene_tree, NULL);
+		if (!d->innerline_buffer)
+			return;
+		d->innerline_buffer->point_accepts_input = border_point_accepts_input;
+		wlr_scene_buffer_set_filter_mode(d->innerline_buffer,
+			WLR_SCALE_FILTER_BILINEAR);
+		/* Above content; border and shadow stay below. */
+		wlr_scene_node_place_above(&d->innerline_buffer->node,
+			&d->scene_buffer->node);
+	}
+
+	struct wlr_buffer *buf = rounded_crop_render_innerline(cw, ch, bw, radii,
+		lw, eff);
+	if (!buf) {
+		if (d->innerline_buffer)
+			wlr_scene_node_set_enabled(&d->innerline_buffer->node, false);
+		return;
+	}
+	wlr_scene_buffer_set_buffer(d->innerline_buffer, buf);
+	wlr_buffer_drop(buf);  /* Scene buffer holds its own reference */
+	wlr_scene_buffer_set_dest_size(d->innerline_buffer, cw, ch);
+	wlr_scene_node_set_position(&d->innerline_buffer->node, 0, 0);
+	wlr_scene_node_set_enabled(&d->innerline_buffer->node, true);
+}
+
 /** Refresh a single drawin's border visuals
  * Renders border as a Cairo surface with shape_bounding mask applied.
  * Borders are positioned OUTSIDE the content area.
@@ -1729,6 +2076,10 @@ drawin_border_refresh_single(drawin_t *d)
 	if (!d->scene_tree || !d->border_buffer)
 		return;
 
+	/* macOS-style inner hairline (independent of the outer border width -
+	 * it still renders when border_width is 0). */
+	drawin_innerline_refresh(d);
+
 	/* Update shadow geometry (independent of border width) */
 	{
 		const shadow_config_t *shadow_config = shadow_get_effective_config(
@@ -1743,6 +2094,10 @@ drawin_border_refresh_single(drawin_t *d)
 			}
 		}
 	}
+
+	/* Rounded corners for drawins are handled by true alpha punches on the
+	 * content buffer (drawin_refresh_drawable) plus the rounded border ring
+	 * (drawin_render_border), so no solid-color mask overlay is needed. */
 
 	bw = d->border_width;
 
@@ -1790,6 +2145,16 @@ drawin_border_refresh_single(drawin_t *d)
  * In Wayland, geometry is already applied via wlr_scene_node_set_position
  * in luaA_drawin_set_geometry(), borders use wlr_scene_rect.
  */
+void
+drawin_apply_rounded_refresh(drawin_t *drawin)
+{
+	if (!drawin->scene_tree || !drawin->drawable ||
+	    !drawin->drawable->surface || !drawin->drawable->refreshed)
+		return;
+	drawin_refresh_drawable(drawin);
+	drawin->border_need_update = true;
+}
+
 void
 drawin_refresh(void)
 {
@@ -2154,8 +2519,47 @@ luaA_drawin_set_shadow(lua_State *L, drawin_t *drawin)
 	return 0;
 }
 
-/* Forward declaration for refresh */
-static void drawin_refresh_drawable(drawin_t *drawin);
+/** drawin.corner_radius - Get rounded corner configuration */
+static int
+luaA_drawin_get_corner_radius(lua_State *L, drawin_t *drawin)
+{
+	if (drawin->rounded_config) {
+		rounded_config_to_lua(L, drawin->rounded_config);
+	} else {
+		const rounded_config_t *eff = rounded_get_effective_config(NULL, true);
+		if (eff->enabled)
+			rounded_config_to_lua(L, eff);
+		else
+			lua_pushboolean(L, false);
+	}
+	return 1;
+}
+
+/** drawin.corner_radius - Set rounded corner configuration */
+static int
+luaA_drawin_set_corner_radius(lua_State *L, drawin_t *drawin)
+{
+	rounded_config_t new_config;
+
+	if (!rounded_config_from_lua(L, -1, &new_config, true)) {
+		return luaL_error(L, "%s", lua_tostring(L, -1));
+	}
+
+	/* Allocate or update config */
+	if (!drawin->rounded_config) {
+		drawin->rounded_config = malloc(sizeof(rounded_config_t));
+		if (!drawin->rounded_config)
+			return luaL_error(L, "out of memory");
+	}
+	*drawin->rounded_config = new_config;
+
+	/* Drawins get rounded via a true alpha punch on the content buffer
+	 * plus the rounded border ring; re-render to apply the new radius. */
+	drawin_apply_rounded_refresh(drawin);
+
+	luaA_object_emit_signal(L, -3, "property::corner_radius", 0);
+	return 0;
+}
 
 /** drawin.shape_bounding - Get visual bounding shape (AwesomeWM signature) */
 static int
@@ -2480,11 +2884,18 @@ drawin_class_setup(lua_State *L)
 		{ "type", (lua_class_propfunc_t) luaA_drawin_set_type, (lua_class_propfunc_t) luaA_drawin_get_type, (lua_class_propfunc_t) luaA_drawin_set_type },
 		{ "_opacity", (lua_class_propfunc_t) luaA_drawin_set_opacity, (lua_class_propfunc_t) luaA_drawin_get_opacity, (lua_class_propfunc_t) luaA_drawin_set_opacity },
 		{ "shadow", (lua_class_propfunc_t) luaA_drawin_set_shadow, (lua_class_propfunc_t) luaA_drawin_get_shadow, (lua_class_propfunc_t) luaA_drawin_set_shadow },
+		{ "corner_radius", (lua_class_propfunc_t) luaA_drawin_set_corner_radius, (lua_class_propfunc_t) luaA_drawin_get_corner_radius, (lua_class_propfunc_t) luaA_drawin_set_corner_radius },
 		{ "surface_scale", (lua_class_propfunc_t) luaA_drawin_set_surface_scale, (lua_class_propfunc_t) luaA_drawin_get_surface_scale, (lua_class_propfunc_t) luaA_drawin_set_surface_scale },
 		{ "border_width", (lua_class_propfunc_t) luaA_drawin_set_border_width, (lua_class_propfunc_t) luaA_drawin_get_border_width, (lua_class_propfunc_t) luaA_drawin_set_border_width },
 		{ "_border_width", (lua_class_propfunc_t) luaA_drawin_set_border_width, (lua_class_propfunc_t) luaA_drawin_get_border_width, (lua_class_propfunc_t) luaA_drawin_set_border_width },
 		{ "border_color", (lua_class_propfunc_t) luaA_drawin_set_border_color, (lua_class_propfunc_t) luaA_drawin_get_border_color, (lua_class_propfunc_t) luaA_drawin_set_border_color },
 		{ "_border_color", (lua_class_propfunc_t) luaA_drawin_set_border_color, (lua_class_propfunc_t) luaA_drawin_get_border_color, (lua_class_propfunc_t) luaA_drawin_set_border_color },
+		{ "border_inner_width", (lua_class_propfunc_t) luaA_drawin_set_border_inner_width, (lua_class_propfunc_t) luaA_drawin_get_border_inner_width, (lua_class_propfunc_t) luaA_drawin_set_border_inner_width },
+		{ "_border_inner_width", (lua_class_propfunc_t) luaA_drawin_set_border_inner_width, (lua_class_propfunc_t) luaA_drawin_get_border_inner_width, (lua_class_propfunc_t) luaA_drawin_set_border_inner_width },
+		{ "border_inner_color", (lua_class_propfunc_t) luaA_drawin_set_border_inner_color, (lua_class_propfunc_t) luaA_drawin_get_border_inner_color, (lua_class_propfunc_t) luaA_drawin_set_border_inner_color },
+		{ "_border_inner_color", (lua_class_propfunc_t) luaA_drawin_set_border_inner_color, (lua_class_propfunc_t) luaA_drawin_get_border_inner_color, (lua_class_propfunc_t) luaA_drawin_set_border_inner_color },
+		{ "border_inner_enabled", (lua_class_propfunc_t) luaA_drawin_set_border_inner_enabled, (lua_class_propfunc_t) luaA_drawin_get_border_inner_enabled, (lua_class_propfunc_t) luaA_drawin_set_border_inner_enabled },
+		{ "_border_inner_enabled", (lua_class_propfunc_t) luaA_drawin_set_border_inner_enabled, (lua_class_propfunc_t) luaA_drawin_get_border_inner_enabled, (lua_class_propfunc_t) luaA_drawin_set_border_inner_enabled },
 		{ "shape_bounding", (lua_class_propfunc_t) luaA_drawin_set_shape_bounding, (lua_class_propfunc_t) luaA_drawin_get_shape_bounding, (lua_class_propfunc_t) luaA_drawin_set_shape_bounding },
 		{ "shape_clip", (lua_class_propfunc_t) luaA_drawin_set_shape_clip, (lua_class_propfunc_t) luaA_drawin_get_shape_clip, (lua_class_propfunc_t) luaA_drawin_set_shape_clip },
 		{ "shape_input", (lua_class_propfunc_t) luaA_drawin_set_shape_input, (lua_class_propfunc_t) luaA_drawin_get_shape_input, (lua_class_propfunc_t) luaA_drawin_set_shape_input },

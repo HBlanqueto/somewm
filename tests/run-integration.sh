@@ -38,7 +38,9 @@ if [ -z "$TEST_RC_LUA" ]; then
 fi
 
 # Setup Lua path to include tests directory
-export LUA_PATH="$ROOT_DIR/lua/?.lua;$ROOT_DIR/lua/?/init.lua;$ROOT_DIR/tests/?.lua;;"
+# Keep any caller-provided LUA_PATH (e.g. a nix dev shell's lgi location);
+# an unset one falls back to the interpreter defaults via ";;".
+export LUA_PATH="$ROOT_DIR/lua/?.lua;$ROOT_DIR/lua/?/init.lua;$ROOT_DIR/tests/?.lua;${LUA_PATH:-;}"
 
 # Wayland backend setup based on HEADLESS mode
 if [ "$HEADLESS" = 1 ]; then

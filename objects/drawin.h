@@ -11,6 +11,7 @@
 #include "common/luaclass.h"  /* For lua_class_t */
 #include "common/luaobject.h"  /* For LUA_OBJECT_FUNCS macro */
 #include "shadow.h"           /* For shadow_config_t, shadow_nodes_t */
+#include "rounded.h"          /* For rounded_config_t, rounded_nodes_t */
 
 /* Forward declarations */
 struct screen_t;
@@ -66,9 +67,16 @@ typedef struct drawin_t {
 	struct wlr_scene_buffer *border_buffer; /* Single buffer for shaped border */
 	color_t border_color_parsed;            /* Cached parsed color for efficient refresh */
 
+	/* macOS-style inner hairline rendered over the content edge */
+	struct wlr_scene_buffer *innerline_buffer; /* Single buffer for inner line */
+
 	/* Shadow support (compositor-level, replaces picom shadows) */
 	shadow_config_t *shadow_config;         /* Per-drawin override (NULL = use defaults) */
 	shadow_nodes_t shadow;                  /* Shadow scene nodes */
+
+	/* Rounded corner support (compositor-level) */
+	rounded_config_t *rounded_config;       /* Per-drawin override (NULL = use defaults) */
+	rounded_nodes_t rounded;                /* Rounded corner scene nodes */
 
 	/* Shape properties (AwesomeWM compatibility)
 	 * These are cairo_surface_t* in A1 format (1-bit alpha mask).
@@ -115,8 +123,14 @@ void luaA_drawin_apply_geometry(drawin_t *drawin);
 /* Drawin refresh cycle (called from main event loop) */
 void drawin_refresh(void);
 
-/* Apply shape mask to a drawable surface (for screenshot support).
- * Returns a new surface with alpha zeroed where shape bit is 0.
+/* Re-apply compositor corner rounding to a drawin's content and border
+ * after its rounded configuration changed (used by corner_reload and the
+ * per-drawin corner_radius setter). */
+void drawin_apply_rounded_refresh(drawin_t *drawin);
+
+/* Apply an A1 or ARGB32 shape mask to a surface.
+ * Returns a new surface scaled by the mask's coverage.
+
  * Caller must destroy the returned surface.
  * Returns NULL if no shape or allocation fails. */
 cairo_surface_t *drawin_apply_shape_mask_for_screenshot(

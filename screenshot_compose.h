@@ -22,6 +22,7 @@ struct screenshot_render_data {
 	cairo_t *cr;
 	struct wlr_renderer *renderer;
 	int offset_x, offset_y;
+	bool painted;	/* set when any buffer was composited into cr */
 };
 
 void composite_scene_buffer_to_cairo(struct wlr_scene_buffer *scene_buffer,

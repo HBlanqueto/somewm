@@ -1722,10 +1722,8 @@ composite_cairo_surface(cairo_t *cr, cairo_surface_t *surface,
 static void
 composite_widgets_directly(cairo_t *cr, bool ontop_only)
 {
-	int i, bar;
+	int i;
 	drawin_t *drawin;
-	client_t *c;
-	bool is_ontop;
 
 	/* Composite visible drawins filtered by ontop state */
 	for (i = 0; i < globalconf.drawins.len; i++) {
@@ -1761,65 +1759,11 @@ composite_widgets_directly(cairo_t *cr, bool ontop_only)
 		}
 	}
 
-	/* Composite client titlebars filtered by ontop/fullscreen state */
-	for (i = 0; i < globalconf.clients.len; i++) {
-		c = globalconf.clients.tab[i];
-		if (!c)
-			continue;
-
-		/* Filter by ontop/fullscreen to ensure correct z-order */
-		is_ontop = c->ontop || c->fullscreen;
-		if (is_ontop != ontop_only)
-			continue;
-
-		for (bar = 0; bar < CLIENT_TITLEBAR_COUNT; bar++) {
-			drawable_t *d = c->titlebar[bar].drawable;
-			int size = c->titlebar[bar].size;
-			int tb_x, tb_y, tb_w, tb_h;
-
-			if (!d || !d->surface || size <= 0)
-				continue;
-
-			if (cairo_surface_status(d->surface) != CAIRO_STATUS_SUCCESS)
-				continue;
-
-			/* Calculate titlebar position based on client geometry and bar type */
-			switch (bar) {
-			case CLIENT_TITLEBAR_TOP:
-				tb_x = c->geometry.x;
-				tb_y = c->geometry.y;
-				tb_w = c->geometry.width;
-				tb_h = size;
-				break;
-			case CLIENT_TITLEBAR_BOTTOM:
-				tb_x = c->geometry.x;
-				tb_y = c->geometry.y + c->geometry.height - size;
-				tb_w = c->geometry.width;
-				tb_h = size;
-				break;
-			case CLIENT_TITLEBAR_LEFT:
-				tb_x = c->geometry.x;
-				tb_y = c->geometry.y + c->titlebar[CLIENT_TITLEBAR_TOP].size;
-				tb_w = size;
-				tb_h = c->geometry.height -
-				       c->titlebar[CLIENT_TITLEBAR_TOP].size -
-				       c->titlebar[CLIENT_TITLEBAR_BOTTOM].size;
-				break;
-			case CLIENT_TITLEBAR_RIGHT:
-				tb_x = c->geometry.x + c->geometry.width - size;
-				tb_y = c->geometry.y + c->titlebar[CLIENT_TITLEBAR_TOP].size;
-				tb_w = size;
-				tb_h = c->geometry.height -
-				       c->titlebar[CLIENT_TITLEBAR_TOP].size -
-				       c->titlebar[CLIENT_TITLEBAR_BOTTOM].size;
-				break;
-			default:
-				continue;
-			}
-
-			composite_cairo_surface(cr, d->surface, tb_x, tb_y, tb_w, tb_h);
-		}
-	}
+	/* Client titlebars are NOT composited here: they are wlr_scene_buffer
+	 * nodes inside the client's scene tree and were already painted by the
+	 * scene pass above (which also applies the border inset and the rounded
+	 * corner crop). Painting the raw drawable again from c->geometry would
+	 * draw a second, uncropped copy offset by the border width. */
 }
 
 /** Orient a source box of sw x sh under transform t, the way the scene
@@ -1917,8 +1861,51 @@ composite_scene_buffer_to_cairo(struct wlr_scene_buffer *scene_buffer,
 	bool need_free = false;
 	cairo_format_t cairo_fmt;
 
-	if (!scene_buffer->buffer)
+	if (!scene_buffer->buffer) {
+		/* The scene releases the hairline's buffer after uploading it to a
+		 * texture (scene_buffer->buffer goes NULL but the texture renders).
+		 * Composite it from the client's crop cache instead, like widgets.
+		 * Note: a NULL buffer here also covers the transient gap during a
+		 * rapid scene reorder, when the content surface has released its
+		 * buffer and no replacement has been attached yet. When no subtree
+		 * buffer is available at all, nothing paints and the caller keeps the
+		 * snapshot unpainted instead of inventing black pixels. */
+		struct client_t *cl = scene_buffer->node.data;
+		struct wlr_buffer *innerline = cl && cl->crop.innerline == scene_buffer
+			? cl->crop.innerline_buf : NULL;
+		if (innerline) {
+			void *ptr;
+			if (wlr_buffer_begin_data_ptr_access(innerline,
+					WLR_BUFFER_DATA_PTR_ACCESS_READ, &ptr, &shm_format,
+					&shm_stride)) {
+				buf_surface = cairo_image_surface_create_for_data(ptr,
+					CAIRO_FORMAT_ARGB32, innerline->width, innerline->height,
+					shm_stride);
+				if (buf_surface &&
+						cairo_surface_status(buf_surface) == CAIRO_STATUS_SUCCESS) {
+					int dstw = scene_buffer->dst_width > 0
+						? scene_buffer->dst_width : innerline->width;
+					int dsth = scene_buffer->dst_height > 0
+						? scene_buffer->dst_height : innerline->height;
+					rdata->painted = true;
+					cairo_save(rdata->cr);
+					cairo_translate(rdata->cr, sx, sy);
+					cairo_rectangle(rdata->cr, 0, 0, dstw, dsth);
+					cairo_clip(rdata->cr);
+					cairo_scale(rdata->cr,
+						(double)dstw / innerline->width,
+						(double)dsth / innerline->height);
+					cairo_set_source_surface(rdata->cr, buf_surface, 0, 0);
+					cairo_paint(rdata->cr);
+					cairo_restore(rdata->cr);
+				}
+				if (buf_surface)
+					cairo_surface_destroy(buf_surface);
+				wlr_buffer_end_data_ptr_access(innerline);
+			}
+		}
 		return;
+	}
 
 	buffer = scene_buffer->buffer;
 	buf_width = buffer->width;
@@ -1941,6 +1928,7 @@ composite_scene_buffer_to_cairo(struct wlr_scene_buffer *scene_buffer,
 				shm_data, cairo_fmt, buf_width, buf_height, shm_stride);
 
 			if (cairo_surface_status(buf_surface) == CAIRO_STATUS_SUCCESS) {
+				rdata->painted = true;
 				composite_paint(rdata, buf_surface, scene_buffer, sx, sy);
 				cairo_surface_destroy(buf_surface);
 			}
@@ -1990,6 +1978,7 @@ composite_scene_buffer_to_cairo(struct wlr_scene_buffer *scene_buffer,
 		return;
 	}
 
+	rdata->painted = true;
 	composite_paint(rdata, buf_surface, scene_buffer, sx, sy);
 
 	cairo_surface_destroy(buf_surface);

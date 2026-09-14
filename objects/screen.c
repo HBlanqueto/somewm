@@ -1214,10 +1214,8 @@ screen_composite_scene_buffer(struct wlr_scene_buffer *buffer,
 static void
 screen_composite_widgets(cairo_t *cr, int sx, int sy, int sw, int sh, bool ontop_only)
 {
-	int i, bar;
+	int i;
 	drawin_t *drawin;
-	client_t *c;
-	bool is_ontop;
 
 	/* Composite visible drawins filtered by ontop state */
 	for (i = 0; i < globalconf.drawins.len; i++) {
@@ -1241,65 +1239,11 @@ screen_composite_widgets(cairo_t *cr, int sx, int sy, int sw, int sh, bool ontop
 		}
 	}
 
-	/* Composite client titlebars filtered by ontop/fullscreen state */
-	for (i = 0; i < globalconf.clients.len; i++) {
-		c = globalconf.clients.tab[i];
-		if (!c)
-			continue;
-
-		/* Filter by ontop/fullscreen to ensure correct z-order */
-		is_ontop = c->ontop || c->fullscreen;
-		if (is_ontop != ontop_only)
-			continue;
-
-		for (bar = 0; bar < CLIENT_TITLEBAR_COUNT; bar++) {
-			drawable_t *d = c->titlebar[bar].drawable;
-			int size = c->titlebar[bar].size;
-			int tb_x, tb_y, tb_w, tb_h;
-
-			if (!d || !d->surface || size <= 0)
-				continue;
-
-			/* Calculate titlebar position */
-			switch (bar) {
-			case CLIENT_TITLEBAR_TOP:
-				tb_x = c->geometry.x;
-				tb_y = c->geometry.y;
-				tb_w = c->geometry.width;
-				tb_h = size;
-				break;
-			case CLIENT_TITLEBAR_BOTTOM:
-				tb_x = c->geometry.x;
-				tb_y = c->geometry.y + c->geometry.height - size;
-				tb_w = c->geometry.width;
-				tb_h = size;
-				break;
-			case CLIENT_TITLEBAR_LEFT:
-				tb_x = c->geometry.x;
-				tb_y = c->geometry.y + c->titlebar[CLIENT_TITLEBAR_TOP].size;
-				tb_w = size;
-				tb_h = c->geometry.height - c->titlebar[CLIENT_TITLEBAR_TOP].size
-				       - c->titlebar[CLIENT_TITLEBAR_BOTTOM].size;
-				break;
-			case CLIENT_TITLEBAR_RIGHT:
-				tb_x = c->geometry.x + c->geometry.width - size;
-				tb_y = c->geometry.y + c->titlebar[CLIENT_TITLEBAR_TOP].size;
-				tb_w = size;
-				tb_h = c->geometry.height - c->titlebar[CLIENT_TITLEBAR_TOP].size
-				       - c->titlebar[CLIENT_TITLEBAR_BOTTOM].size;
-				break;
-			default:
-				continue;
-			}
-
-			if (!box_intersects_screen(tb_x, tb_y, tb_w, tb_h, sx, sy, sw, sh))
-				continue;
-
-			screen_composite_cairo_surface(cr, d->surface,
-			                               tb_x - sx, tb_y - sy,
-			                               tb_w, tb_h);
-		}
-	}
+	/* Client titlebars are NOT composited here: they are wlr_scene_buffer
+	 * nodes inside the client's scene tree and were already painted by the
+	 * scene pass (which also applies the border inset and the rounded
+	 * corner crop). Painting the raw drawable again from c->geometry would
+	 * draw a second, uncropped copy offset by the border width. */
 }
 
 /** Get screenshot of this screen

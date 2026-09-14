@@ -328,6 +328,106 @@ luaA_window_set_border_color(lua_State *L, window_t *window)
     return 0;
 }
 
+/** Get inner hairline width property.
+ * \param L The Lua VM state.
+ * \param window The window object.
+ * \return The number of elements pushed on stack.
+ */
+static int
+luaA_window_get_border_inner_width(lua_State *L, window_t *window)
+{
+    lua_pushinteger(L, window->border_inner_width);
+    return 1;
+}
+
+/** Set inner hairline width property (Lua property setter).
+ * \param L The Lua VM state.
+ * \param window The window object.
+ * \return The number of elements pushed on stack.
+ */
+static int
+luaA_window_set_border_inner_width(lua_State *L, window_t *window)
+{
+    (void)window;
+    int width = round(luaA_checknumber_range(L, -1, 0, MAX_X11_SIZE));
+
+    if(width == window->border_inner_width)
+        return 0;
+
+    window->border_need_update = true;
+    window->border_inner_width = width;
+    luaA_object_emit_signal(L, -3, "property::border_inner_width", 0);
+    return 0;
+}
+
+/** Get inner hairline color property.
+ * \param L The Lua VM state.
+ * \param window The window object.
+ * \return The number of elements pushed on stack.
+ */
+static int
+luaA_window_get_border_inner_color(lua_State *L, window_t *window)
+{
+    if (!window->border_inner_color.initialized) {
+        /* Match the theme default until a rule overrides it. */
+        lua_pushstring(L, "rgba(255,255,255,0.10)");
+        return 1;
+    }
+    return luaA_pushcolor(L, &window->border_inner_color);
+}
+
+/** Set inner hairline color property (Lua property setter).
+ * \param L The Lua VM state.
+ * \param window The window object.
+ * \return The number of elements pushed on stack.
+ */
+static int
+luaA_window_set_border_inner_color(lua_State *L, window_t *window)
+{
+    const char *color_name = luaL_checkstring(L, -1);
+    color_t new_color;
+
+    if(color_name && color_init_from_string(&new_color, color_name))
+    {
+        window->border_inner_color = new_color;
+        window->border_need_update = true;
+        luaA_object_emit_signal(L, -3, "property::border_inner_color", 0);
+    }
+
+    return 0;
+}
+
+/** Get inner hairline on/off property.
+ * \param L The Lua VM state.
+ * \param window The window object.
+ * \return The number of elements pushed on stack.
+ */
+static int
+luaA_window_get_border_inner_enabled(lua_State *L, window_t *window)
+{
+    lua_pushboolean(L, window->border_inner_enabled);
+    return 1;
+}
+
+/** Set inner hairline on/off property (Lua property setter).
+ * \param L The Lua VM state.
+ * \param window The window object.
+ * \return The number of elements pushed on stack.
+ */
+static int
+luaA_window_set_border_inner_enabled(lua_State *L, window_t *window)
+{
+    bool enabled = luaA_checkboolean(L, -1);
+
+    if(enabled == window->border_inner_enabled)
+        return 0;
+
+    window->border_need_update = true;
+    window->border_inner_enabled = enabled;
+    luaA_object_emit_signal(L, -3, "property::border_inner_enabled", 0);
+    return 0;
+}
+
 /** Get a window type (as string).
  * \param L The Lua VM state.
  * \param w The window object.
@@ -416,6 +516,9 @@ window_class_setup(lua_State *L)
         { "_opacity", (lua_class_propfunc_t) luaA_window_set_opacity, (lua_class_propfunc_t) luaA_window_get_opacity, (lua_class_propfunc_t) luaA_window_set_opacity },
         { "_border_color", (lua_class_propfunc_t) luaA_window_set_border_color, (lua_class_propfunc_t) luaA_window_get_border_color, (lua_class_propfunc_t) luaA_window_set_border_color },
         { "_border_width", (lua_class_propfunc_t) luaA_window_set_border_width, (lua_class_propfunc_t) luaA_window_get_border_width, (lua_class_propfunc_t) luaA_window_set_border_width },
+        { "_border_inner_color", (lua_class_propfunc_t) luaA_window_set_border_inner_color, (lua_class_propfunc_t) luaA_window_get_border_inner_color, (lua_class_propfunc_t) luaA_window_set_border_inner_color },
+        { "_border_inner_width", (lua_class_propfunc_t) luaA_window_set_border_inner_width, (lua_class_propfunc_t) luaA_window_get_border_inner_width, (lua_class_propfunc_t) luaA_window_set_border_inner_width },
+        { "_border_inner_enabled", (lua_class_propfunc_t) luaA_window_set_border_inner_enabled, (lua_class_propfunc_t) luaA_window_get_border_inner_enabled, (lua_class_propfunc_t) luaA_window_set_border_inner_enabled },
         { "type", (lua_class_propfunc_t) luaA_window_set_type, (lua_class_propfunc_t) luaA_window_get_type, (lua_class_propfunc_t) luaA_window_set_type },
     };
     luaA_class_add_properties(&window_class, properties, countof(properties));

@@ -306,6 +306,21 @@ xdg_shell_client_code = custom_target(
   command: [wayland_scanner, 'private-code', '@INPUT@', '@OUTPUT@'],
 )
 
+# viewporter client bindings for the fractional-scale test client
+viewporter_client_header = custom_target(
+  'viewporter-client-protocol.h',
+  input: wayland_protocols_dir / 'stable/viewporter/viewporter.xml',
+  output: 'viewporter-client-protocol.h',
+  command: [wayland_scanner, 'client-header', '@INPUT@', '@OUTPUT@'],
+)
+
+viewporter_client_code = custom_target(
+  'viewporter-client-protocol.c',
+  input: wayland_protocols_dir / 'stable/viewporter/viewporter.xml',
+  output: 'viewporter-client-protocol.c',
+  command: [wayland_scanner, 'private-code', '@INPUT@', '@OUTPUT@'],
+)
+
 # linux-dmabuf-v1 client protocol (header + code) for the DMA-BUF test client
 linux_dmabuf_client_header = custom_target(
   'linux-dmabuf-v1-client-protocol.h',
@@ -426,6 +441,9 @@ somewm_sources = [
   'somewm.c',
   'somewm_api.c',
   'ipc.c',
+  'window.c',
+  'rounded.c',
+  'event_queue.c',
   'color.c',
   'draw.c',
   'stack.c',
@@ -499,6 +517,10 @@ all_deps = [
   wlroots,
   m_dep,
 ]
+
+if pixman.found()
+  all_deps += [pixman]
+endif
 
 if have_xwayland
   all_deps += [xcb, xcb_icccm]
@@ -600,6 +622,17 @@ test_content_pattern_client = executable(
   'test-content-pattern-client',
   ['tests/test-content-pattern-client.c', xdg_shell_client_code],
   xdg_shell_client_header,
+  dependencies: [wayland_client],
+  install: false,
+)
+
+# Test XDG client that commits an over-scaled buffer presented via viewport
+# (fractional-scale layout); verifies rounded-corner crops against the
+# displayed box rather than buffer/scale.
+test_fractional_pattern_client = executable(
+  'test-fractional-pattern-client',
+  ['tests/test-fractional-pattern-client.c', xdg_shell_client_code, viewporter_client_code],
+  [xdg_shell_client_header, viewporter_client_header],
   dependencies: [wayland_client],
   install: false,
 )

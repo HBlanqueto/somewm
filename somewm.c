@@ -96,6 +96,8 @@
 #include "wlr_compat.h"
 #include "nested_inhibitor.h"
 #include "globalconf.h"        /* Global configuration structure (AwesomeWM pattern) */
+#include "window.h"
+#include "event_queue.h"
 #include "event.h"
 #include "banning.h"            /* Client visibility management (banning) */
 #include "luaa.h"
@@ -2026,6 +2028,7 @@ createnotify(struct wl_listener *listener, void *data)
 	c->surface.xdg = toplevel->base;
 	c->client_type = XDGShell;
 	c->bw = get_border_width();
+	client_init_border_inner_defaults(c);
 
 	/* Register Wayland event listeners (adapts X11 event masks to Wayland signals)
 	 * Note: The main commit listener is registered in mapnotify() AFTER wlr_scene_xdg_surface_create()
@@ -3811,6 +3814,11 @@ client_remove_all_listeners(client_t *c)
 			wl_list_remove(&c->map.link);
 			wl_list_remove(&c->unmap.link);
 		}
+		/* Rounded crop commit hook only exists while mapped */
+		if (c->scene) {
+			wl_list_remove(&c->crop_commit.link);
+			wl_list_remove(&c->content_commit.link);
+		}
 	} else
 #endif
 	{
@@ -3819,6 +3827,8 @@ client_remove_all_listeners(client_t *c)
 		 * Only remove here if unmapnotify didn't run (c->scene still set). */
 		if (c->scene) {
 			wl_list_remove(&c->commit.link);
+			wl_list_remove(&c->crop_commit.link);
+			wl_list_remove(&c->content_commit.link);
 		}
 		wl_list_remove(&c->map.link);
 		wl_list_remove(&c->unmap.link);
@@ -3872,6 +3882,8 @@ client_reregister_listeners(client_t *c)
 		if (c->scene && xsurface->surface) {
 			LISTEN(&xsurface->surface->events.map, &c->map, mapnotify);
 			LISTEN(&xsurface->surface->events.unmap, &c->unmap, unmapnotify);
+			LISTEN(&xsurface->surface->events.commit, &c->crop_commit, cropcommitnotify);
+			LISTEN(&xsurface->surface->events.commit, &c->content_commit, contentcommitnotify);
 		}
 	} else
 #endif
@@ -3889,6 +3901,8 @@ client_reregister_listeners(client_t *c)
 			 * Initialize initial_commit.link so client_remove_all_listeners
 			 * can safely call wl_list_remove on it during consecutive reloads. */
 			LISTEN(&c->surface.xdg->surface->events.commit, &c->commit, commitnotify);
+			LISTEN(&c->surface.xdg->surface->events.commit, &c->crop_commit, cropcommitnotify);
+			LISTEN(&c->surface.xdg->surface->events.commit, &c->content_commit, contentcommitnotify);
 			LISTEN(&c->surface.xdg->surface->events.map, &c->map, mapnotify);
 			LISTEN(&c->surface.xdg->surface->events.unmap, &c->unmap, unmapnotify);
 			wl_list_init(&c->initial_commit.link);
@@ -5011,6 +5025,13 @@ mapnotify(struct wl_listener *listener, void *data)
 	if (c->client_type == XDGShell) {
 		LISTEN(&client_surface(c)->events.commit, &c->commit, commitnotify);
 	}
+	/* Rounded crop: registered last so it runs after both wlroots'
+	 * surface_reconfigure() and commitnotify()'s geometry pass. */
+	LISTEN(&client_surface(c)->events.commit, &c->crop_commit, cropcommitnotify);
+	/* Content-change hook for Lua autocolor: one extra listener here matches
+	 * the crop_commit lifetime (register on map, remove on unmap) for both
+	 * XDG and XWayland clients. */
+	LISTEN(&client_surface(c)->events.commit, &c->content_commit, contentcommitnotify);
 
 	client_get_geometry(c, &c->geometry);
 
@@ -6101,6 +6122,14 @@ apply_geometry_to_wlroots(Client *c)
 		}
 	}
 
+	/* Rounded corners: swap the square border rects for a rounded ring
+	 * (content and titlebars are cropped per-pixel, see client_crop_*).
+	 * Fullscreen disables rounding so no app pixels are cut. */
+	client_crop_update_ring(c, frame_w, frame_h);
+
+	/* Inner hairline (macOS-style light line inside the border). */
+	client_crop_update_innerline(c);
+
 	/* Update titlebar positions - they depend on current geometry */
 	client_update_titlebar_positions(c);
 
@@ -6169,6 +6198,10 @@ apply_geometry_to_wlroots(Client *c)
 			wlr_scene_node_set_enabled(&c->scene_surface->node, true);
 			for (int i = 0; i < 4; i++)
 				wlr_scene_node_set_enabled(&c->border[i]->node, true);
+			if (c->crop.ring && c->crop.ring_buf && !c->fullscreen)
+				wlr_scene_node_set_enabled(&c->crop.ring->node, true);
+			if (c->crop.innerline && c->crop.innerline_buf && !c->fullscreen)
+				wlr_scene_node_set_enabled(&c->crop.innerline->node, true);
 			if (c->shadow.tree)
 				wlr_scene_node_set_enabled(&c->shadow.tree->node, true);
 		} else {
@@ -6197,6 +6230,11 @@ apply_geometry_to_wlroots(Client *c)
 			wlr_scene_node_set_enabled(&c->scene_surface->node, partially_visible);
 			for (int i = 0; i < 4; i++)
 				wlr_scene_node_set_enabled(&c->border[i]->node, partially_visible);
+			if (c->crop.ring && c->crop.ring_buf && !c->fullscreen)
+				wlr_scene_node_set_enabled(&c->crop.ring->node, partially_visible);
+			if (c->crop.innerline && c->crop.innerline_buf && !c->fullscreen)
+				wlr_scene_node_set_enabled(&c->crop.innerline->node,
+					partially_visible);
 			if (c->shadow.tree)
 				wlr_scene_node_set_enabled(&c->shadow.tree->node, partially_visible);
 
@@ -6222,11 +6260,19 @@ apply_geometry_to_wlroots(Client *c)
 		wlr_scene_node_set_enabled(&c->scene_surface->node, true);
 		for (int i = 0; i < 4; i++)
 			wlr_scene_node_set_enabled(&c->border[i]->node, true);
+		if (c->crop.ring && c->crop.ring_buf && !c->fullscreen)
+			wlr_scene_node_set_enabled(&c->crop.ring->node, true);
+		if (c->crop.innerline && c->crop.innerline_buf && !c->fullscreen)
+			wlr_scene_node_set_enabled(&c->crop.innerline->node, true);
 		if (c->shadow.tree)
 			wlr_scene_node_set_enabled(&c->shadow.tree->node, true);
 	}
 
 	wlr_scene_subsurface_tree_set_clip(&c->scene_surface->node, &clip);
+
+	/* set_clip() made wlroots re-apply the raw client buffer; re-crop. */
+	if (c->crop.applied || client_crop_active(c))
+		client_crop_apply(c);
 }
 
 void
@@ -6548,6 +6594,11 @@ some_refresh(void)
 	if (in_refresh)
 		return;
 	in_refresh = true;
+
+	/* Step 0: Drain queued events - dispatch batched signals to Lua.
+	 * Must happen before the refresh signal so Lua handlers see
+	 * up-to-date state when layout runs. */
+	some_event_queue_drain(globalconf_L);
 
 #ifdef SOMEWM_BENCH
 	struct timespec bench_start, bench_end;
@@ -7248,6 +7299,17 @@ setup(void)
 
 	/* Appearance defaults (from config.h) */
 	globalconf.appearance.border_width = 1;
+	/* Inner hairline: macOS-style edge highlight, enabled via
+	 * beautiful.border_inner_enabled (clients) or
+	 * beautiful.border_inner_drawin_enabled (standalone drawins). Off by
+	 * default so nothing renders unless a theme opts in. */
+	globalconf.appearance.border_inner_width = 1;
+	globalconf.appearance.border_inner_color[0] = 1.0f;
+	globalconf.appearance.border_inner_color[1] = 1.0f;
+	globalconf.appearance.border_inner_color[2] = 1.0f;
+	globalconf.appearance.border_inner_color[3] = 0.10f;
+	globalconf.appearance.border_inner_enabled = false;
+	globalconf.appearance.border_inner_drawin_enabled = false;
 	globalconf.appearance.rootcolor[0] = 0x22/255.0f;
 	globalconf.appearance.rootcolor[1] = 0x22/255.0f;
 	globalconf.appearance.rootcolor[2] = 0x22/255.0f;
@@ -7283,6 +7345,16 @@ setup(void)
 	globalconf.shadow.client.clip_directional = true;
 	/* Drawin defaults (same as client initially) */
 	globalconf.shadow.drawin = globalconf.shadow.client;
+
+	/* Rounded corners (disabled by default, theme enables via beautiful.corner_*) */
+	globalconf.rounded.client.enabled = false;
+	globalconf.rounded.client.radius = 0;
+	globalconf.rounded.client.color[0] = 0.0f;  /* Black */
+	globalconf.rounded.client.color[1] = 0.0f;
+	globalconf.rounded.client.color[2] = 0.0f;
+	globalconf.rounded.client.color[3] = 1.0f;
+	/* Drawin defaults (same as client initially) */
+	globalconf.rounded.drawin = globalconf.rounded.client;
 
 	/* Keyboard defaults (NULL = system defaults) */
 	globalconf.keyboard.xkb_layout = NULL;
@@ -7630,6 +7702,9 @@ unmapnotify(struct wl_listener *listener, void *data)
 	if (c->client_type == XDGShell) {
 		wl_list_remove(&c->commit.link);
 	}
+	wl_list_remove(&c->crop_commit.link);
+	wl_list_remove(&c->content_commit.link);
+	client_crop_release(c);
 
 	client_scene_node_destroy(c);
 
@@ -8450,6 +8525,7 @@ createnotifyx11(struct wl_listener *listener, void *data)
 	/* Set the window ID for EWMH/X11 property lookups */
 	c->window = xsurface->window_id;
 	c->bw = client_is_unmanaged(c) ? 0 : get_border_width();
+	client_init_border_inner_defaults(c);
 
 	/* NOTE: Do NOT call ewmh_client_check_hints() here!
 	 * At this point the XWayland surface exists but may not be fully initialized.

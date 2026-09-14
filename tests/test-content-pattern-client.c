@@ -34,6 +34,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
+#include <time.h>
 #include <unistd.h>
 #include <wayland-client.h>
 #include "xdg-shell-client-protocol.h"
@@ -58,6 +59,16 @@ static int g_pending_scale = 1;
 static int g_current_scale = 0;     /* 0 = nothing committed yet */
 static char g_marker_path[256];
 
+/* --cycle N: re-commit a whole-window solid fill from this palette every N ms,
+ * so a test driver can watch a compositor follow live content changes. */
+static const uint32_t g_cycle_palette[] = {
+    0xFFFF2222, 0xFF22FF22, 0xFF2222FF, 0xFFFFFF22, 0xFFFF22FF, 0xFF22FFFF,
+};
+#define CYCLE_PALETTE_LEN (int)(sizeof(g_cycle_palette) / sizeof(g_cycle_palette[0]))
+static int g_cycle_ms = 0;
+static uint64_t g_cycle_start_ms = 0;
+static int g_cycle_last = -1;
+
 static volatile sig_atomic_t g_running = 1;
 
 static void handle_term(int sig) {
@@ -68,7 +79,7 @@ static void handle_term(int sig) {
 /* Create an SHM-backed wl_buffer holding the 4-quadrant ARGB8888 pattern at
  * the given physical dims, inset by a transparent ring of m physical pixels.
  * Caller owns the returned buffer. */
-static struct wl_buffer *create_pattern_buffer(int w, int h, int m) {
+static struct wl_buffer *create_pattern_buffer(int w, int h, int m, uint32_t fill) {
     if (w <= 0 || h <= 0)
         return NULL;
 
@@ -100,14 +111,18 @@ static struct wl_buffer *create_pattern_buffer(int w, int h, int m) {
 
     memset(data, 0, size);
 
+    /* fill != 0 paints a whole-buffer solid (cycle mode); the 4-quadrant
+     * pattern is used otherwise. */
     int half_w = w / 2;
     int half_h = h / 2;
     for (int y = 0; y < h; y++) {
         for (int x = 0; x < w; x++) {
             uint32_t color;
-            if      (x <  half_w && y <  half_h) color = 0xFFFF0000; /* TL red    */
-            else if (x >= half_w && y <  half_h) color = 0xFF00FF00; /* TR green  */
-            else if (x <  half_w && y >= half_h) color = 0xFF0000FF; /* BL blue   */
+            if (fill != 0)
+                color = fill;
+            else if (x <  half_w && y <  half_h) color = 0xFFFF0000; /* TL red */
+            else if (x >= half_w && y <  half_h) color = 0xFF00FF00; /* TR green */
+            else if (x <  half_w && y >= half_h) color = 0xFF0000FF; /* BL blue */
             else                                 color = 0xFFFFFF00; /* BR yellow */
             data[(y + m) * buf_w + (x + m)] = color;
         }
@@ -131,7 +146,11 @@ static void render_pattern(void) {
     int phys_h = g_logical_h * scale;
     int phys_m = g_margin * scale;
 
-    struct wl_buffer *buf = create_pattern_buffer(phys_w, phys_h, phys_m);
+    uint32_t fill = 0;
+    if (g_cycle_ms > 0 && g_cycle_last >= 0)
+        fill = g_cycle_palette[g_cycle_last % CYCLE_PALETTE_LEN];
+
+    struct wl_buffer *buf = create_pattern_buffer(phys_w, phys_h, phys_m, fill);
     if (!buf) {
         fprintf(stderr, "[content-pattern-client] buffer alloc failed (%dx%d)\n",
                 phys_w, phys_h);
@@ -286,8 +305,10 @@ int main(int argc, char *argv[]) {
             g_margin = atoi(argv[++i]);
         else if (strcmp(argv[i], "--transform") == 0 && i + 1 < argc)
             g_transform = atoi(argv[++i]);
+        else if (strcmp(argv[i], "--cycle") == 0 && i + 1 < argc)
+            g_cycle_ms = atoi(argv[++i]);
         else {
-            fprintf(stderr, "Usage: %s [--margin N] [--transform N]\n", argv[0]);
+            fprintf(stderr, "Usage: %s [--margin N] [--transform N] [--cycle MS]\n", argv[0]);
             return 1;
         }
     }
@@ -297,6 +318,8 @@ int main(int argc, char *argv[]) {
         fprintf(stderr, "--transform must be 0..7\n");
         return 1;
     }
+    if (g_cycle_ms <= 0)
+        g_cycle_ms = 0;
 
     snprintf(g_marker_path, sizeof(g_marker_path),
              "/tmp/test-content-pattern-%d.scale", (int)getpid());
@@ -354,16 +377,35 @@ int main(int argc, char *argv[]) {
                 goto done;
         }
 
+        int timeout_ms = g_cycle_ms > 0 ? g_cycle_ms : 100;
         struct pollfd pfd = {
             .fd = wl_display_get_fd(g_display),
             .events = POLLIN,
         };
-        int ret = poll(&pfd, 1, 100);
+        int ret = poll(&pfd, 1, timeout_ms);
 
         if (ret > 0) {
             wl_display_read_events(g_display);
         } else {
             wl_display_cancel_read(g_display);
+        }
+
+        if (g_cycle_ms > 0) {
+            struct timespec ts;
+            clock_gettime(CLOCK_MONOTONIC, &ts);
+            uint64_t now_ms = (uint64_t)ts.tv_sec * 1000u +
+                              (uint64_t)(ts.tv_nsec / 1000000);
+            if (g_cycle_start_ms == 0)
+                g_cycle_start_ms = now_ms;
+            /* Each palette color dwells g_cycle_ms before the next commit, so
+             * a debounced color sampler sees a stable dominant between moves. */
+            int dwell = (int)(((now_ms - g_cycle_start_ms) /
+                               (uint64_t)g_cycle_ms) %
+                              (uint64_t)CYCLE_PALETTE_LEN);
+            if (dwell != g_cycle_last) {
+                g_cycle_last = dwell;
+                render_pattern();
+            }
         }
     }
 done:

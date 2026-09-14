@@ -42,6 +42,8 @@
 #include "objects/window.h"
 #include "dbus.h"
 #include "shadow.h"
+#include "rounded.h"
+#include "window.h"
 #include "pam_auth.h"
 
 /* Forward declaration for Lua state recreation (used by config timeout handler) */
@@ -1520,6 +1522,29 @@ luaA_awesome_shadow_reload(lua_State *L)
 	return 0;
 }
 
+/** Reload rounded corner settings from beautiful theme.
+ * Call this after changing beautiful.corner_* values to apply them.
+ * Regenerates corner masks and updates all existing objects.
+ */
+static int
+luaA_awesome_corner_reload(lua_State *L)
+{
+	/* Reload config from beautiful */
+	rounded_load_beautiful_defaults(L);
+
+	/* Update all existing client corners (true crop: content, titlebars,
+	 * border ring) */
+	foreach(c, globalconf.clients)
+		client_crop_config_changed(*c);
+
+	/* Update all existing drawin corners (true alpha punch on the content
+	 * buffer + rounded border ring; no solid-color mask is used for drawins) */
+	foreach(d, globalconf.drawins)
+		drawin_apply_rounded_refresh(*d);
+
+	return 0;
+}
+
 /* ==========================================================================
  * Lock API Methods
  * ========================================================================== */
@@ -2238,6 +2263,7 @@ const luaL_Reg awesome_methods[] = {
 	{ "load_image", luaA_load_image },
 	{ "restart", luaA_restart },
 	{ "shadow_reload", luaA_awesome_shadow_reload },
+	{ "corner_reload", luaA_awesome_corner_reload },
 	{ "_test_add_output", luaA_awesome_test_add_output },
 	/* Lock API methods */
 	{ "lock", luaA_awesome_lock },
@@ -5033,6 +5059,14 @@ clients_detach(client_snapshot_t **out, int *out_count)
 		for (j = 0; j < SHADOW_TEXTURE_COUNT; j++)
 			c->shadow.textures[j] = NULL;
 		c->shadow_config = NULL;
+		/* Don't let GC touch rounded corner textures - snapshot owns them */
+		for (j = 0; j < ROUNDED_TEXTURE_COUNT; j++)
+			c->rounded.textures[j] = NULL;
+		c->rounded_config = NULL;
+		/* Don't let GC drop rounded corner crop buffers - snapshot owns them */
+		c->crop.buf = NULL;
+		c->crop.ring_buf = NULL;
+		c->crop.innerline_buf = NULL;
 		/* Don't let GC destroy the scene tree */
 		c->scene = NULL;
 	}
@@ -5402,6 +5436,9 @@ luaA_loadrc(void)
 
 			/* Load shadow defaults from beautiful theme */
 			shadow_load_beautiful_defaults(globalconf_L);
+
+			/* Load rounded corner defaults from beautiful theme */
+			rounded_load_beautiful_defaults(globalconf_L);
 
 			loaded = 1;
 			break;

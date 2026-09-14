@@ -288,7 +288,9 @@ end
 -- Proxy those properties to decorate their accessors with an extra flag to
 -- define when they are set by the user. This allows to "manage" the value of
 -- those properties internally until they are manually overridden.
-for _, prop in ipairs { "border_width", "border_color", "opacity" } do
+for _, prop in ipairs { "border_width", "border_color", "opacity",
+                        "border_inner_width", "border_inner_color",
+                        "border_inner_enabled" } do
     wibox["get_"..prop] = function(self)
         return self["_"..prop] or (prop == "border_width" and 0 or nil)
     end

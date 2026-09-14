@@ -48,6 +48,12 @@ ARRAY_TYPE(button_t *, button)
     color_t border_color; \
     /** Border width */ \
     uint16_t border_width; \
+    /** Inner hairline color (macOS-style, inside the border) */ \
+    color_t border_inner_color; \
+    /** Inner hairline width (0 = off) */ \
+    uint16_t border_inner_width; \
+    /** Inner hairline on/off (default off) */ \
+    bool border_inner_enabled; \
     /** The window type */ \
     window_type_t type; \
     /** The border width callback */ \

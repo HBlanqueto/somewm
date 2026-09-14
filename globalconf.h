@@ -31,6 +31,7 @@
 #include "common/buffer.h"
 #include "x11_compat.h"
 #include "shadow.h"
+#include "rounded.h"
 #include <wayland-server-core.h>
 #include <cairo.h>
 
@@ -276,6 +277,10 @@ typedef struct
     /** Appearance settings (beautiful theme integration) */
     struct {
         unsigned int border_width;    /* Window border thickness in pixels */
+        unsigned int border_inner_width; /* Inner hairline width (0 = off) */
+        float border_inner_color[4];  /* Inner hairline RGBA */
+        bool border_inner_enabled;    /* Inner hairline on clients (default off) */
+        bool border_inner_drawin_enabled; /* Inner hairline on drawins (default off) */
         float rootcolor[4];           /* Background color RGBA */
         float bordercolor[4];         /* Unfocused border color RGBA */
         float focuscolor[4];          /* Focused border color RGBA */
@@ -286,6 +291,9 @@ typedef struct
 
     /** Shadow settings (compositor-level, replaces picom shadows) */
     shadow_defaults_t shadow;
+
+    /** Rounded corner settings (compositor-level) */
+    rounded_defaults_t rounded;
 
     /** Keyboard settings (XKB configuration) */
     struct {

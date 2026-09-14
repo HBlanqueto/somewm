@@ -107,12 +107,16 @@
 #include "common/util.h"
 #include "../event.h"
 #include "../shadow.h"
+#include "../rounded.h"
 #include "objects/spawn.h"
 #include "../property.h"
 #include "../screenshot_compose.h"
 
 /* Forward declaration - applies client geometry to wlroots scene graph */
 void apply_geometry_to_wlroots(client_t *c);
+/* Rounded corner crop (window.c) */
+void client_crop_titlebar_buffer(client_t *c, struct wlr_buffer *buffer, area_t area);
+void client_crop_config_changed(client_t *c);
 
 #include <math.h>
 #include <stdio.h>
@@ -1618,6 +1622,15 @@ client_wipe(client_t *c)
     if (c->shadow_config) {
         free(c->shadow_config);
         c->shadow_config = NULL;
+    }
+
+    /* Rounded corner nodes are children of c->scene and destroyed with it.
+     * We own the texture buffers though and must free them. */
+    rounded_release(&c->rounded);
+    rounded_crop_release(&c->crop);
+    if (c->rounded_config) {
+        free(c->rounded_config);
+        c->rounded_config = NULL;
     }
 
     p_delete(&c->machine);
@@ -3892,6 +3905,9 @@ client_refresh_titlebar_partial(client_t *c, client_titlebar_t bar, int16_t x, i
     if (!buffer)
         return;
 
+    /* Rounded corners: fade the titlebar's pixels outside the frame arcs */
+    client_crop_titlebar_buffer(c, buffer, area);
+
     /* Update scene buffer - same pattern as drawin */
     wlr_scene_buffer_set_buffer_with_damage(
         c->titlebar[bar].scene_buffer, buffer, NULL);
@@ -3962,6 +3978,13 @@ titlebar_get_drawable(lua_State *L, client_t *c, int cl_idx, client_titlebar_t b
             area = titlebar_get_area(c, bar);
             wlr_scene_node_set_position(&c->titlebar[bar].scene_buffer->node,
                                           area.x, area.y);
+
+            /* Keep rounded corner masks above the titlebar (they cut its
+             * corners), but popups/menus above the masks. */
+            if (c->rounded.tree)
+                wlr_scene_node_raise_to_top(&c->rounded.tree->node);
+            if (c->popups)
+                wlr_scene_node_raise_to_top(&c->popups->node);
         }
     }
 
@@ -4491,6 +4514,56 @@ luaA_client_set_shadow(lua_State *L, client_t *c)
     return 0;
 }
 
+/** Get client rounded corner configuration.
+ * \param L The Lua VM state.
+ * \param c The client.
+ * \return Number of elements pushed on stack.
+ */
+static int
+luaA_client_get_corner_radius(lua_State *L, client_t *c)
+{
+    if (c->rounded_config) {
+        rounded_config_to_lua(L, c->rounded_config);
+    } else {
+        const rounded_config_t *eff = rounded_get_effective_config(NULL, false);
+        if (eff->enabled && c->rounded.tree) {
+            rounded_config_to_lua(L, eff);
+        } else {
+            lua_pushboolean(L, false);
+        }
+    }
+    return 1;
+}
+
+/** Set client rounded corner configuration.
+ * \param L The Lua VM state.
+ * \param c The client.
+ * \return Number of elements pushed on stack.
+ */
+static int
+luaA_client_set_corner_radius(lua_State *L, client_t *c)
+{
+    rounded_config_t new_config;
+
+    if (!rounded_config_from_lua(L, -1, &new_config, false)) {
+        return luaL_error(L, "%s", lua_tostring(L, -1));
+    }
+
+    /* Allocate or update config */
+    if (!c->rounded_config) {
+        c->rounded_config = malloc(sizeof(rounded_config_t));
+        if (!c->rounded_config)
+            return luaL_error(L, "out of memory");
+    }
+    *c->rounded_config = new_config;
+
+    /* Re-crop content, titlebars and border ring if client is mapped */
+    client_crop_config_changed(c);
+
+    luaA_object_emit_signal(L, -3, "property::corner_radius", 0);
+    return 0;
+}
+
 static int
 luaA_client_set_skip_taskbar(lua_State *L, client_t *c)
 {
@@ -4681,12 +4754,24 @@ luaA_client_get_content(lua_State *L, client_t *c)
      * Subtract it so buffers land at the content origin of the capture. */
     rdata.cr        = cr;
     rdata.renderer  = drw;
+    rdata.painted   = false;
     rdata.offset_x  = -c->scene_surface->node.x;
     rdata.offset_y  = -c->scene_surface->node.y;
     wlr_scene_node_for_each_buffer(&c->scene_surface->node,
                                    composite_scene_buffer_to_cairo, &rdata);
 
     cairo_destroy(cr);
+
+    /* A client whose scene subtree had no buffer to composite at capture time
+     * (rapid focus/raise reordering releases the content buffer while no
+     * replacement is attached yet) would otherwise produce an all-transparent
+     * snapshot that Lua reads as solid black. Refuse the capture instead so
+     * consumers fall back to the last known color. */
+    if (!rdata.painted) {
+        cairo_surface_destroy(surface);
+        return 0;
+    }
+
     cairo_surface_mark_dirty(surface);
 
     /* lua has to make sure to free the ref or we have a leak */
@@ -5335,6 +5420,7 @@ client_class_setup(lua_State *L)
         { "_scene_layer", NULL, (lua_class_propfunc_t) luaA_client_get__scene_layer, NULL },
         { "screen", NULL, (lua_class_propfunc_t) luaA_client_get_screen, (lua_class_propfunc_t) luaA_client_set_screen },
         { "shadow", (lua_class_propfunc_t) luaA_client_set_shadow, (lua_class_propfunc_t) luaA_client_get_shadow, (lua_class_propfunc_t) luaA_client_set_shadow },
+        { "corner_radius", (lua_class_propfunc_t) luaA_client_set_corner_radius, (lua_class_propfunc_t) luaA_client_get_corner_radius, (lua_class_propfunc_t) luaA_client_set_corner_radius },
         { "shape_bounding", (lua_class_propfunc_t) luaA_client_set_shape_bounding, (lua_class_propfunc_t) luaA_client_get_shape_bounding, (lua_class_propfunc_t) luaA_client_set_shape_bounding },
         { "shape_clip", (lua_class_propfunc_t) luaA_client_set_shape_clip, (lua_class_propfunc_t) luaA_client_get_shape_clip, (lua_class_propfunc_t) luaA_client_set_shape_clip },
         { "shape_input", (lua_class_propfunc_t) luaA_client_set_shape_input, (lua_class_propfunc_t) luaA_client_get_shape_input, (lua_class_propfunc_t) luaA_client_set_shape_input },

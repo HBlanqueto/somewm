@@ -26,9 +26,172 @@
 #include <stdio.h>
 #include <lauxlib.h>
 
+/* Scale a single RGBA channel to a byte.
+ *
+ * Integer values (e.g. "255") are treated as the CSS 0-255 scale; values with
+ * a fractional part (e.g. "0.5") are treated as the 0.0-1.0 scale.
+ */
+static uint8_t
+color_channel_to_u8(double v, bool is_int)
+{
+    if (is_int) {
+        if (v < 0)
+            v = 0;
+        if (v > 255)
+            v = 255;
+        return (uint8_t)(v + 0.5);
+    }
+    if (v < 0)
+        v = 0;
+    if (v > 1)
+        v = 1;
+    return (uint8_t)(v * 255.0 + 0.5);
+}
+
+/* Parse one rgba()/rgb() channel: skip whitespace, read a number. */
+static bool
+color_parse_channel(const char **sp, double *out, bool *is_int)
+{
+    const char *s = *sp;
+    char *end;
+    double v;
+
+    while (*s == ' ' || *s == '\t')
+        s++;
+    if (*s == '\0' || *s == ')')
+        return false;
+
+    v = strtod(s, &end);
+    if (end == s)
+        return false;
+
+    *is_int = (strspn(s, "0123456789") == (size_t)(end - s));
+    *out = v;
+    *sp = end;
+    return true;
+}
+
+/** Parse the functional color form rgba(R,G,B,A) / rgb(R,G,B).
+ *
+ * R,G,B accept either 0-255 integers ("255") or 0.0-1.0 fractions ("0.5").
+ * A (alpha) is always a 0.0-1.0 fraction, like CSS; "1" means fully opaque.
+ *
+ * \param colstr The color string (starts with "rgb")
+ * \param len The color string length
+ * \param red Pointer to store red component (0-255)
+ * \param green Pointer to store green component (0-255)
+ * \param blue Pointer to store blue component (0-255)
+ * \param alpha Pointer to store alpha component (0-255)
+ * \return true if parsing succeeded, false on error
+ */
+static bool
+color_parse_rgba(const char *colstr, ssize_t len,
+                 uint8_t *red, uint8_t *green, uint8_t *blue, uint8_t *alpha)
+{
+    const char *s = colstr + 3;
+    bool has_alpha;
+    double comp[4];
+    bool is_int[4];
+    int n = 0;
+
+    has_alpha = (*s == 'a');
+    s = strchr(s, '(');
+    if (!s)
+        return false;
+    s++;
+
+    while (*s != ')' && *s != '\0') {
+        if (!color_parse_channel(&s, &comp[n], &is_int[n]))
+            return false;
+        n++;
+        while (*s == ' ' || *s == '\t')
+            s++;
+        if (*s == ',')
+            s++;
+    }
+    if (*s != ')')
+        return false;
+
+    /* rgb() needs exactly 3 channels; rgba() takes 3 or 4 (alpha optional). */
+    if (has_alpha) {
+        if (n != 4 && n != 3)
+            return false;
+    } else if (n != 3) {
+        return false;
+    }
+
+    *red   = color_channel_to_u8(comp[0], is_int[0]);
+    *green = color_channel_to_u8(comp[1], is_int[1]);
+    *blue  = color_channel_to_u8(comp[2], is_int[2]);
+    if (n == 4)
+        *alpha = color_channel_to_u8(comp[3], false);
+    else
+        *alpha = 0xff;
+
+    return true;
+}
+
 /** Parse a hexadecimal color string to its RGBA components
  *
+ * Accepts "#RGB", "#RRGGBB" and "#RRGGBBAA".
+ *
  * \param colstr The color string (must start with #)
+ * \param len The color string length
+ * \param red Pointer to store red component (0-255)
+ * \param green Pointer to store green component (0-255)
+ * \param blue Pointer to store blue component (0-255)
+ * \param alpha Pointer to store alpha component (0-255)
+ * \return true if parsing succeeded, false on error
+ */
+static bool
+color_parse_hex(const char *colstr, ssize_t len,
+                uint8_t *red, uint8_t *green, uint8_t *blue, uint8_t *alpha)
+{
+    unsigned long colnum;
+    char *p;
+    int i;
+
+    *alpha = 0xff;  /* Default to fully opaque */
+
+    if (colstr[0] != '#')
+        return false;
+
+    if (len == 4) {
+        /* Short form #RGB: each digit doubled (#f0a == #ff00aa) */
+        char expanded[8];
+        expanded[0] = '#';
+        for (i = 0; i < 3; i++) {
+            expanded[1 + 2 * i] = colstr[1 + i];
+            expanded[2 + 2 * i] = colstr[1 + i];
+        }
+        expanded[7] = '\0';
+        return color_parse_hex(expanded, 7, red, green, blue, alpha);
+    }
+
+    colnum = strtoul(colstr + 1, &p, 16);
+    if (len == 9 && (p - colstr) == 9) {
+        /* Format: #RRGGBBAA */
+        *alpha = colnum & 0xff;
+        colnum >>= 8;
+        len -= 2;
+        p -= 2;
+    }
+    if (len != 7 || (p - colstr) != 7)
+        return false;
+
+    *red   = (colnum >> 16) & 0xff;
+    *green = (colnum >> 8) & 0xff;
+    *blue  = colnum & 0xff;
+
+    return true;
+}
+
+/** Parse a color string to its RGBA components
+ *
+ * Supports hex ("#RGB", "#RRGGBB", "#RRGGBBAA") and the functional form
+ * ("rgb(...)", "rgba(r,g,b,a)").
+ *
+ * \param colstr The color string
  * \param len The color string length
  * \param red Pointer to store red component (0-255)
  * \param green Pointer to store green component (0-255)
@@ -40,31 +203,23 @@ static bool
 color_parse(const char *colstr, ssize_t len,
             uint8_t *red, uint8_t *green, uint8_t *blue, uint8_t *alpha)
 {
-    unsigned long colnum;
-    char *p;
+    bool ok;
 
     *alpha = 0xff;  /* Default to fully opaque */
 
-    colnum = strtoul(colstr + 1, &p, 16);
-    if(len == 9 && (p - colstr) == 9)
-    {
-        /* Format: #RRGGBBAA */
-        *alpha = colnum & 0xff;
-        colnum >>= 8;
-        len -= 2;
-        p -= 2;
+    if (len >= 4 && colstr[0] == 'r' && colstr[1] == 'g' && colstr[2] == 'b'
+            && (colstr[3] == '(' || (colstr[3] == 'a' && len >= 5 && colstr[4] == '('))
+            && colstr[len - 1] == ')') {
+        ok = color_parse_rgba(colstr, len, red, green, blue, alpha);
+        if (!ok)
+            fprintf(stderr, "somewm: error, invalid color '%s'\n", colstr);
+        return ok;
     }
-    if(len != 7 || colstr[0] != '#' || (p - colstr) != 7)
-    {
+
+    ok = color_parse_hex(colstr, len, red, green, blue, alpha);
+    if (!ok)
         fprintf(stderr, "somewm: error, invalid color '%s'\n", colstr);
-        return false;
-    }
-
-    *red   = (colnum >> 16) & 0xff;
-    *green = (colnum >> 8) & 0xff;
-    *blue  = colnum & 0xff;
-
-    return true;
+    return ok;
 }
 
 /** Parse a color string and initialize a color_t structure
