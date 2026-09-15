@@ -46,6 +46,8 @@ static const shadow_config_t shadow_defaults = {
     .offset_y = -15,
     .spread = 0,
     .corner_radius = 0,
+    .radii = { 0, 0, 0, 0 },
+    .follow_corners = true,
     .opacity = 0.75f,
     .color = { 0.0f, 0.0f, 0.0f, 1.0f },
     .clip_directional = true,
@@ -298,6 +300,29 @@ shadow_get_effective_config(const shadow_config_t *override, bool is_drawin)
     return is_drawin ? &globalconf.shadow.drawin : &globalconf.shadow.client;
 }
 
+void
+shadow_config_with_window_radii(shadow_config_t *out,
+                                const shadow_config_t *base,
+                                const int window_radii[4],
+                                bool window_rounded)
+{
+    if (!out)
+        return;
+
+    *out = base ? *base : shadow_defaults;
+
+    if (!out->follow_corners)
+        return;
+
+    for (int i = 0; i < 4; i++) {
+        int r = 0;
+        if (window_rounded && window_radii)
+            r = window_radii[i] > 0 ? window_radii[i] : 0;
+        out->radii[i] = r;
+    }
+    out->corner_radius = out->radii[SHADOW_CORNER_TL];
+}
+
 static inline int
 shadow_radius(const shadow_config_t *config)
 {
@@ -305,9 +330,23 @@ shadow_radius(const shadow_config_t *config)
 }
 
 static inline int
-shadow_corner_radius(const shadow_config_t *config)
+shadow_corner_radius(const shadow_config_t *config, int corner)
 {
-    return config->corner_radius > 0 ? config->corner_radius : 0;
+    int r = config->radii[corner];
+    return r > 0 ? r : 0;
+}
+
+/** Largest configured corner radius (0 when every corner is square). */
+static inline int
+shadow_max_corner_radius(const shadow_config_t *config)
+{
+    int max = 0;
+    for (int i = 0; i < 4; i++) {
+        int r = shadow_corner_radius(config, i);
+        if (r > max)
+            max = r;
+    }
+    return max;
 }
 
 /**
@@ -335,18 +374,18 @@ static bool
 shadow_render_textures(shadow_nodes_t *shadow, const shadow_config_t *config)
 {
     int radius = shadow_radius(config);
-    int corner_radius = shadow_corner_radius(config);
+    int max_corner = shadow_max_corner_radius(config);
     float paint = shadow_paint(config);
 
     for (int i = 0; i < 4; i++)
-        shadow->textures[i] = shadow_render_corner(i, radius, corner_radius,
-                                                   config->color, paint);
+        shadow->textures[i] = shadow_render_corner(i, radius,
+            shadow_corner_radius(config, i), config->color, paint);
     shadow->textures[4] = shadow_render_edge_h(radius, config->color, paint);
     shadow->textures[5] = shadow_render_edge_v(radius, config->color, paint);
 
     /* Fail on genuine allocation failure, not on legitimately empty
      * textures (radius 0 needs no edges, radius+corner_radius 0 no corners) */
-    if (radius + corner_radius > 0 && !shadow->textures[0]) {
+    if ((radius + max_corner) > 0 && !shadow->textures[0]) {
         shadow_free_textures(shadow);
         return false;
     }
@@ -415,14 +454,12 @@ shadow_create(struct wlr_scene_tree *parent,
         config->color[0] * paint, config->color[1] * paint,
         config->color[2] * paint, paint,
     };
-    shadow->fill[SHADOW_FILL_MID] =
-        wlr_scene_rect_create(shadow->tree, 0, 0, fill_color);
-    if (shadow_corner_radius(config) > 0) {
-        shadow->fill[SHADOW_FILL_LEFT] =
-            wlr_scene_rect_create(shadow->tree, 0, 0, fill_color);
-        shadow->fill[SHADOW_FILL_RIGHT] =
-            wlr_scene_rect_create(shadow->tree, 0, 0, fill_color);
-    }
+    for (int i = 0; i < SHADOW_FILL_COUNT; i++)
+        shadow->fill[i] = wlr_scene_rect_create(shadow->tree, 0, 0, fill_color);
+
+    /* Remember what these textures were rendered for so shadow_update() can
+     * tell a pure resize from a config/rounding change. */
+    shadow->config = *config;
 
     shadow->user_visible = true;
     shadow->size_ok = true;
@@ -482,48 +519,67 @@ shadow_update_geometry(shadow_nodes_t *shadow,
     shadow->last_height = height;
 
     int radius = shadow_radius(config);
-    int cr = shadow_corner_radius(config);
+    int rtl = shadow_corner_radius(config, SHADOW_CORNER_TL);
+    int rtr = shadow_corner_radius(config, SHADOW_CORNER_TR);
+    int rbl = shadow_corner_radius(config, SHADOW_CORNER_BL);
+    int rbr = shadow_corner_radius(config, SHADOW_CORNER_BR);
     int sw = width + 2 * config->spread;
     int sh = height + 2 * config->spread;
     int bx = config->offset_x - config->spread;
     int by = config->offset_y - config->spread;
 
-    /* An object smaller than its corner patches cannot host this shadow;
-     * hide it rather than let the patches overlap. */
-    shadow->size_ok = sw >= 2 * cr && sh >= 2 * cr && sw > 0 && sh > 0;
+    /* The arcs must fit without overlapping: each horizontal edge needs room
+     * for the two radii meeting there, and likewise each vertical edge.
+     * Otherwise hide the shadow rather than let the patches overlap. */
+    shadow->size_ok = sw > 0 && sh > 0
+        && sw >= rtl + rtr && sw >= rbl + rbr
+        && sh >= rtl + rbl && sh >= rtr + rbr;
     wlr_scene_node_set_enabled(&shadow->tree->node,
         shadow->user_visible && shadow->size_ok);
     if (!shadow->size_ok)
         return;
 
-    int cs = radius + cr;     /* corner patch side */
-    int mid_w = sw - 2 * cr;  /* span between the corner columns */
-    int mid_h = sh - 2 * cr;
-
+    /* Corner patches: (radius + corner radius) squares, each centred on its
+     * own arc, so the four corners may have different radii. */
     shadow_place_slice(shadow->slice[SHADOW_CORNER_TL],
-        bx - radius, by - radius, cs, cs);
+        bx - radius, by - radius, radius + rtl, radius + rtl);
     shadow_place_slice(shadow->slice[SHADOW_CORNER_TR],
-        bx + sw - cr, by - radius, cs, cs);
+        bx + sw - rtr, by - radius, radius + rtr, radius + rtr);
     shadow_place_slice(shadow->slice[SHADOW_CORNER_BL],
-        bx - radius, by + sh - cr, cs, cs);
+        bx - radius, by + sh - rbl, radius + rbl, radius + rbl);
     shadow_place_slice(shadow->slice[SHADOW_CORNER_BR],
-        bx + sw - cr, by + sh - cr, cs, cs);
+        bx + sw - rbr, by + sh - rbr, radius + rbr, radius + rbr);
 
+    /* Edge strips span between the two corner patches they connect. */
     shadow_place_slice(shadow->slice[SHADOW_EDGE_TOP],
-        bx + cr, by - radius, mid_w, radius);
+        bx + rtl, by - radius, sw - rtl - rtr, radius);
     shadow_place_slice(shadow->slice[SHADOW_EDGE_BOTTOM],
-        bx + cr, by + sh, mid_w, radius);
+        bx + rbl, by + sh, sw - rbl - rbr, radius);
     shadow_place_slice(shadow->slice[SHADOW_EDGE_LEFT],
-        bx - radius, by + cr, radius, mid_h);
+        bx - radius, by + rtl, radius, sh - rtl - rbl);
     shadow_place_slice(shadow->slice[SHADOW_EDGE_RIGHT],
-        bx + sw, by + cr, radius, mid_h);
+        bx + sw, by + rtr, radius, sh - rtr - rbr);
+
+    /* Interior: a full-height central band, two side columns, and four caps
+     * that step out to the wider of the two radii on each side. Non-
+     * overlapping, so a semi-transparent shadow never double-blends. */
+    int lx = rtl > rbl ? rtl : rbl;   /* left column width */
+    int rx = rtr > rbr ? rtr : rbr;   /* right column width */
 
     shadow_place_fill(shadow->fill[SHADOW_FILL_MID],
-        bx + cr, by, mid_w, sh);
+        bx + lx, by, sw - lx - rx, sh);
     shadow_place_fill(shadow->fill[SHADOW_FILL_LEFT],
-        bx, by + cr, cr, mid_h);
+        bx, by + rtl, lx, sh - rtl - rbl);
     shadow_place_fill(shadow->fill[SHADOW_FILL_RIGHT],
-        bx + sw - cr, by + cr, cr, mid_h);
+        bx + sw - rx, by + rtr, rx, sh - rtr - rbr);
+    shadow_place_fill(shadow->fill[SHADOW_FILL_LEFT_TOP],
+        bx + rtl, by, lx - rtl, rtl);
+    shadow_place_fill(shadow->fill[SHADOW_FILL_LEFT_BOTTOM],
+        bx + rbl, by + sh - rbl, lx - rbl, rbl);
+    shadow_place_fill(shadow->fill[SHADOW_FILL_RIGHT_TOP],
+        bx + sw - rx, by, rx - rtr, rtr);
+    shadow_place_fill(shadow->fill[SHADOW_FILL_RIGHT_BOTTOM],
+        bx + sw - rx, by + sh - rbr, rx - rbr, rbr);
 }
 
 void
@@ -541,6 +597,43 @@ shadow_update_config(shadow_nodes_t *shadow,
 
     if (config->enabled)
         shadow_create(parent, shadow, config, width, height);
+}
+
+/* True when two resolved configs would render identical textures. Geometry
+ * (offsets/spread/size) is handled separately by shadow_update_geometry. */
+static bool
+shadow_config_equal(const shadow_config_t *a, const shadow_config_t *b)
+{
+    if (a->enabled != b->enabled || a->radius != b->radius)
+        return false;
+    for (int i = 0; i < 4; i++) {
+        if (a->radii[i] != b->radii[i])
+            return false;
+    }
+    if (a->opacity != b->opacity)
+        return false;
+    for (int i = 0; i < 4; i++) {
+        if (a->color[i] != b->color[i])
+            return false;
+    }
+    return true;
+}
+
+void
+shadow_update(shadow_nodes_t *shadow,
+              struct wlr_scene_tree *parent,
+              const shadow_config_t *config,
+              int width, int height)
+{
+    if (!shadow || !config)
+        return;
+
+    if (shadow->tree && shadow_config_equal(&shadow->config, config)) {
+        shadow_update_geometry(shadow, config, width, height);
+        return;
+    }
+
+    shadow_update_config(shadow, parent, config, width, height);
 }
 
 void
@@ -578,6 +671,55 @@ shadow_release(shadow_nodes_t *shadow)
 }
 
 /* ========== Lua Integration ========== */
+
+/** Per-corner Lua keys, ordered TL, TR, BL, BR. */
+static const char *const shadow_corner_keys[4] = {
+    "top_left", "top_right", "bottom_left", "bottom_right"
+};
+
+/**
+ * Parse a radius value ({@code number} or table) into per-corner radii.
+ * A plain number sets all four corners; a positional table {tl,tr,bl,br}
+ * and/or named keys set individual corners.
+ */
+static void
+shadow_parse_radii_value(lua_State *L, int idx, int radii[4])
+{
+    if (lua_isnumber(L, idx)) {
+        int n = (int)lua_tointeger(L, idx);
+        for (int i = 0; i < 4; i++)
+            radii[i] = n;
+    } else if (lua_istable(L, idx)) {
+        /* Positional {tl, tr, bl, br}? */
+        lua_rawgeti(L, idx, 1);
+        bool positional = lua_isnumber(L, -1);
+        lua_pop(L, 1);
+        if (positional) {
+            for (int i = 0; i < 4; i++) {
+                lua_rawgeti(L, idx, i + 1);
+                if (lua_isnumber(L, -1))
+                    radii[i] = (int)lua_tointeger(L, -1);
+                lua_pop(L, 1);
+            }
+        }
+        /* `radius` / `corner_radii` wrapper keys (number or table) */
+        lua_getfield(L, idx, "radius");
+        if (!lua_isnil(L, -1))
+            shadow_parse_radii_value(L, -1, radii);
+        lua_pop(L, 1);
+        lua_getfield(L, idx, "corner_radii");
+        if (!lua_isnil(L, -1))
+            shadow_parse_radii_value(L, -1, radii);
+        lua_pop(L, 1);
+        /* Named per-corner keys at this level */
+        for (int i = 0; i < 4; i++) {
+            lua_getfield(L, idx, shadow_corner_keys[i]);
+            if (lua_isnumber(L, -1))
+                radii[i] = (int)lua_tointeger(L, -1);
+            lua_pop(L, 1);
+        }
+    }
+}
 
 bool
 shadow_config_from_lua(lua_State *L, int idx, shadow_config_t *config,
@@ -632,10 +774,50 @@ shadow_config_from_lua(lua_State *L, int idx, shadow_config_t *config,
         config->spread = (int)lua_tonumber(L, -1);
     lua_pop(L, 1);
 
+    /* corner_radius = uniform number or per-corner table */
+    bool explicit_radii = false;
     lua_getfield(L, idx, "corner_radius");
-    if (lua_isnumber(L, -1))
-        config->corner_radius = (int)lua_tonumber(L, -1);
+    if (!lua_isnil(L, -1)) {
+        shadow_parse_radii_value(L, -1, config->radii);
+        explicit_radii = true;
+    }
     lua_pop(L, 1);
+
+    /* `radii` / `corner_radii` = positional {tl, tr, bl, br} */
+    lua_getfield(L, idx, "radii");
+    if (!lua_isnil(L, -1)) {
+        shadow_parse_radii_value(L, -1, config->radii);
+        explicit_radii = true;
+    }
+    lua_pop(L, 1);
+
+    lua_getfield(L, idx, "corner_radii");
+    if (!lua_isnil(L, -1)) {
+        shadow_parse_radii_value(L, -1, config->radii);
+        explicit_radii = true;
+    }
+    lua_pop(L, 1);
+
+    /* Named per-corner keys at table level */
+    for (int i = 0; i < 4; i++) {
+        lua_getfield(L, idx, shadow_corner_keys[i]);
+        if (lua_isnumber(L, -1)) {
+            config->radii[i] = (int)lua_tointeger(L, -1);
+            explicit_radii = true;
+        }
+        lua_pop(L, 1);
+    }
+
+    /* Following the window's rounding is the default; naming explicit radii
+     * opts out so a hand-tuned shadow stays hand-tuned. */
+    lua_getfield(L, idx, "follow_corners");
+    if (!lua_isnil(L, -1))
+        config->follow_corners = lua_toboolean(L, -1);
+    else if (explicit_radii)
+        config->follow_corners = false;
+    lua_pop(L, 1);
+
+    config->corner_radius = config->radii[SHADOW_CORNER_TL];
 
     lua_getfield(L, idx, "opacity");
     if (lua_isnumber(L, -1))
@@ -702,7 +884,21 @@ shadow_config_to_lua(lua_State *L, const shadow_config_t *config)
     lua_pushinteger(L, config->spread);
     lua_setfield(L, -2, "spread");
 
-    lua_pushinteger(L, config->corner_radius);
+    lua_pushboolean(L, config->follow_corners);
+    lua_setfield(L, -2, "follow_corners");
+
+    bool uniform = true;
+    for (int i = 1; i < 4; i++)
+        uniform = uniform && config->radii[i] == config->radii[0];
+    if (!uniform) {
+        lua_createtable(L, 4, 0);
+        for (int i = 0; i < 4; i++) {
+            lua_pushinteger(L, config->radii[i]);
+            lua_rawseti(L, -2, i + 1);
+        }
+        lua_setfield(L, -2, "corner_radii");
+    }
+    lua_pushinteger(L, config->radii[SHADOW_CORNER_TL]);
     lua_setfield(L, -2, "corner_radius");
 
     lua_pushnumber(L, config->opacity);
@@ -735,6 +931,16 @@ shadow_beautiful_int(lua_State *L, const char *key, int *out)
     lua_getfield(L, -1, key);
     if (lua_isnumber(L, -1))
         *out = (int)lua_tointeger(L, -1);
+    lua_pop(L, 1);
+}
+
+/** Read one radius beautiful key (number or {tl,tr,bl,br}) into radii. */
+static void
+shadow_beautiful_radius(lua_State *L, const char *key, int radii[4])
+{
+    lua_getfield(L, -1, key);
+    if (!lua_isnil(L, -1))
+        shadow_parse_radii_value(L, -1, radii);
     lua_pop(L, 1);
 }
 
@@ -787,7 +993,13 @@ shadow_load_beautiful_defaults(lua_State *L)
     shadow_beautiful_int(L, "shadow_offset_x", &client->offset_x);
     shadow_beautiful_int(L, "shadow_offset_y", &client->offset_y);
     shadow_beautiful_int(L, "shadow_spread", &client->spread);
-    shadow_beautiful_int(L, "shadow_corner_radius", &client->corner_radius);
+    shadow_beautiful_radius(L, "shadow_corner_radius", client->radii);
+    client->corner_radius = client->radii[SHADOW_CORNER_TL];
+
+    lua_getfield(L, -1, "shadow_follow_corners");
+    if (!lua_isnil(L, -1))
+        client->follow_corners = lua_toboolean(L, -1);
+    lua_pop(L, 1);
 
     lua_getfield(L, -1, "shadow_opacity");
     if (lua_isnumber(L, -1))
@@ -822,7 +1034,13 @@ shadow_load_beautiful_defaults(lua_State *L)
     shadow_beautiful_int(L, "shadow_drawin_offset_x", &drawin->offset_x);
     shadow_beautiful_int(L, "shadow_drawin_offset_y", &drawin->offset_y);
     shadow_beautiful_int(L, "shadow_drawin_spread", &drawin->spread);
-    shadow_beautiful_int(L, "shadow_drawin_corner_radius", &drawin->corner_radius);
+    shadow_beautiful_radius(L, "shadow_drawin_corner_radius", drawin->radii);
+    drawin->corner_radius = drawin->radii[SHADOW_CORNER_TL];
+
+    lua_getfield(L, -1, "shadow_drawin_follow_corners");
+    if (!lua_isnil(L, -1))
+        drawin->follow_corners = lua_toboolean(L, -1);
+    lua_pop(L, 1);
 
     lua_getfield(L, -1, "shadow_drawin_opacity");
     if (lua_isnumber(L, -1))

@@ -319,6 +319,33 @@ drawin_render_border(drawin_t *d)
 	return surface;
 }
 
+/* Effective per-corner radii (TL,TR,BL,BR) of the drawin's outer frame
+ * contour, used by the shadow so it follows the window shape. A drawin
+ * carrying a Lua shape owns its own geometry (square, like the hairline);
+ * only un-shaped drawins fall back to the global drawin radius. Returns
+ * false when every corner is square. */
+bool
+drawin_outer_radii(drawin_t *d, int radii[4])
+{
+	const rounded_config_t *rcfg;
+	int i, any = 0;
+
+	if (!d->rounded_config && (d->shape_clip || d->shape_bounding)) {
+		for (i = 0; i < 4; i++)
+			radii[i] = 0;
+		return false;
+	}
+
+	rcfg = rounded_get_effective_config(d->rounded_config, true);
+	for (i = 0; i < 4; i++) {
+		radii[i] = (rcfg && rounded_config_active(rcfg))
+			? (rcfg->radii[i] < 0 ? 0 : rcfg->radii[i]) : 0;
+		if (radii[i] > 0)
+			any++;
+	}
+	return any > 0;
+}
+
 /** Coverage alpha of the rounded-rect corner cut (mirror of rounded.c).
  * Pixels farther than `r` from the corner point are the cut corner. */
 static float
@@ -988,7 +1015,12 @@ drawin_allocator(lua_State *L)
 		const shadow_config_t *shadow_config = shadow_get_effective_config(
 			drawin->shadow_config, true);
 		if (shadow_config && shadow_config->enabled) {
-			shadow_create(drawin->scene_tree, &drawin->shadow, shadow_config,
+			int radii[4];
+			bool rounded = drawin_outer_radii(drawin, radii);
+			shadow_config_t eff;
+			shadow_config_with_window_radii(&eff, shadow_config, radii,
+				rounded);
+			shadow_create(drawin->scene_tree, &drawin->shadow, &eff,
 				drawin->width, drawin->height);
 			/* Shadow starts hidden like the rest of the drawin */
 			shadow_set_visible(&drawin->shadow, false);
@@ -2085,13 +2117,13 @@ drawin_border_refresh_single(drawin_t *d)
 		const shadow_config_t *shadow_config = shadow_get_effective_config(
 			d->shadow_config, true);
 		if (shadow_config && shadow_config->enabled) {
-			if (d->shadow.tree) {
-				shadow_update_geometry(&d->shadow, shadow_config,
-					d->width, d->height);
-			} else {
-				shadow_create(d->scene_tree, &d->shadow, shadow_config,
-					d->width, d->height);
-			}
+			int radii[4];
+			bool rounded = drawin_outer_radii(d, radii);
+			shadow_config_t eff;
+			shadow_config_with_window_radii(&eff, shadow_config, radii,
+				rounded);
+			shadow_update(&d->shadow, d->scene_tree, &eff,
+				d->width, d->height);
 		}
 	}
 
@@ -2506,7 +2538,11 @@ luaA_drawin_set_shadow(lua_State *L, drawin_t *drawin)
 
 	/* Update shadow if scene tree exists */
 	if (drawin->scene_tree) {
-		shadow_update_config(&drawin->shadow, drawin->scene_tree, &new_config,
+		int radii[4];
+		bool rounded = drawin_outer_radii(drawin, radii);
+		shadow_config_t eff;
+		shadow_config_with_window_radii(&eff, &new_config, radii, rounded);
+		shadow_update(&drawin->shadow, drawin->scene_tree, &eff,
 			drawin->width, drawin->height);
 		/* Match drawin visibility */
 		shadow_set_visible(&drawin->shadow, drawin->visible);

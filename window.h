@@ -18,6 +18,9 @@ struct wlr_buffer;
 
 /* Rounded corner crop (true transparency) */
 bool client_crop_active(Client *c);
+/* Effective per-corner radii (TL,TR,BL,BR) of the outer frame contour; false
+ * when rounding is off (disabled, fullscreen, or all radii zero). */
+bool client_crop_outer_radii(Client *c, int radii[4]);
 bool client_crop_inner_rect(Client *c, struct wlr_box *rect, int radii[4]);
 void client_crop_apply(Client *c);
 void client_crop_titlebar_buffer(Client *c, struct wlr_buffer *buffer, struct wlr_box area);

@@ -1501,21 +1501,29 @@ luaA_awesome_shadow_reload(lua_State *L)
 	/* Reload config from beautiful */
 	shadow_load_beautiful_defaults(L);
 
-	/* Update all existing client shadows */
+	/* Update all existing client shadows (following the window rounding) */
 	foreach(c, globalconf.clients) {
 		const shadow_config_t *config = shadow_get_effective_config(
 			(*c)->shadow_config, false);
-		shadow_update_config(&(*c)->shadow, (*c)->scene, config,
+		int radii[4];
+		bool rounded = client_crop_outer_radii(*c, radii);
+		shadow_config_t eff;
+		shadow_config_with_window_radii(&eff, config, radii, rounded);
+		shadow_update(&(*c)->shadow, (*c)->scene, &eff,
 			(*c)->geometry.width + 2 * (*c)->bw,
 			(*c)->geometry.height + 2 * (*c)->bw);
 	}
 
-	/* Update all existing drawin shadows */
+	/* Update all existing drawin shadows (following the window rounding) */
 	foreach(d, globalconf.drawins) {
 		drawin_t *drawin = *d;
 		const shadow_config_t *config = shadow_get_effective_config(
 			drawin->shadow_config, true);
-		shadow_update_config(&drawin->shadow, drawin->scene_tree, config,
+		int radii[4];
+		bool rounded = drawin_outer_radii(drawin, radii);
+		shadow_config_t eff;
+		shadow_config_with_window_radii(&eff, config, radii, rounded);
+		shadow_update(&drawin->shadow, drawin->scene_tree, &eff,
 			drawin->width, drawin->height);
 	}
 
@@ -5402,13 +5410,13 @@ luaA_loadrc(void)
 			free(snaps);
 
 			/* Record the error for notification */
-			luaA_startup_error("Config loading timed out (exceeded 10 seconds)");
+			luaA_startup_error("Config loading timed out (exceeded 30 seconds)");
 
 			continue;
 		}
 		config_timeout_jmp_valid = 1;
 
-		alarm(10);  /* 10 second timeout */
+		alarm(30);  /* 30 second timeout */
 
 		/* Execute with protected call using error handler */
 		if (lua_pcall(globalconf_L, 0, 0, -2) == 0) {
@@ -5459,7 +5467,7 @@ luaA_loadrc(void)
 
 			/* Check if this was a timeout */
 			if (config_timeout_fired) {
-				fprintf(stderr, "somewm: config %s timed out after 10 seconds\n",
+				fprintf(stderr, "somewm: config %s timed out after 30 seconds\n",
 					config_paths[i]);
 				fprintf(stderr, "somewm: check for blocking io.popen() or os.execute() calls\n");
 			}

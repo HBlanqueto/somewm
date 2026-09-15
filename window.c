@@ -227,6 +227,12 @@ client_crop_active(Client *c)
 	return client_crop_radii(c, radii);
 }
 
+bool
+client_crop_outer_radii(Client *c, int radii[4])
+{
+	return client_crop_radii(c, radii);
+}
+
 /* Inner rounded rect (frame coordinates) shared by content and titlebars.
  * Computes the per-corner radii of the inner rect (outer radius minus the
  * border, clamped to the content area). Returns false when nothing should

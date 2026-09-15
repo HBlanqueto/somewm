@@ -128,6 +128,11 @@ void drawin_refresh(void);
  * per-drawin corner_radius setter). */
 void drawin_apply_rounded_refresh(drawin_t *drawin);
 
+/* Effective per-corner radii (TL,TR,BL,BR) of the drawin's outer frame
+ * contour; false when every corner is square. Used by the shadow so it
+ * follows the window shape. */
+bool drawin_outer_radii(drawin_t *d, int radii[4]);
+
 /* Apply an A1 or ARGB32 shape mask to a surface.
  * Returns a new surface scaled by the mask's coverage.
 

@@ -475,7 +475,7 @@ rounded_crop_pixels(void *pixels, size_t stride, int buf_w, int buf_h,
     /* Arc centers and the local-space square each corner occupies. */
     const double cx[4] = {
         rrect->x + r[ROUNDED_TL], rrect->x + rrect->width - r[ROUNDED_TR],
-        rrect->x + r[ROUNDED_TL], rrect->x + rrect->width - r[ROUNDED_BR],
+        rrect->x + r[ROUNDED_BL], rrect->x + rrect->width - r[ROUNDED_BR],
     };
     const double cy[4] = {
         rrect->y + r[ROUNDED_TL], rrect->y + r[ROUNDED_TR],

@@ -6131,18 +6131,19 @@ apply_geometry_to_wlroots(Client *c)
 	wlr_scene_node_set_position(&c->border[2]->node, 0, c->bw);
 	wlr_scene_node_set_position(&c->border[3]->node, frame_w - c->bw, c->bw);
 
-	/* Update shadow geometry (lazy creation if needed) */
+	/* Update shadow geometry (lazy creation if needed). The shadow follows
+	 * the client's effective rounded-corner radii so its contour matches the
+	 * window's, per corner. */
 	{
 		const shadow_config_t *shadow_config = shadow_get_effective_config(
 			c->shadow_config, false);
 		if (shadow_config && shadow_config->enabled) {
-			if (c->shadow.tree) {
-				shadow_update_geometry(&c->shadow, shadow_config,
-					frame_w, frame_h);
-			} else {
-				shadow_create(c->scene, &c->shadow, shadow_config,
-					frame_w, frame_h);
-			}
+			int radii[4];
+			bool rounded = client_crop_outer_radii(c, radii);
+			shadow_config_t eff;
+			shadow_config_with_window_radii(&eff, shadow_config, radii,
+				rounded);
+			shadow_update(&c->shadow, c->scene, &eff, frame_w, frame_h);
 		}
 	}
 

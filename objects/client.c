@@ -117,6 +117,7 @@ void apply_geometry_to_wlroots(client_t *c);
 /* Rounded corner crop (window.c) */
 void client_crop_titlebar_buffer(client_t *c, struct wlr_buffer *buffer, area_t area);
 void client_crop_config_changed(client_t *c);
+bool client_crop_outer_radii(client_t *c, int radii[4]);
 
 #include <math.h>
 #include <stdio.h>
@@ -4506,7 +4507,11 @@ luaA_client_set_shadow(lua_State *L, client_t *c)
 
     /* Update shadow if client is mapped */
     if (c->scene) {
-        shadow_update_config(&c->shadow, c->scene, &new_config,
+        int radii[4];
+        bool rounded = client_crop_outer_radii(c, radii);
+        shadow_config_t eff;
+        shadow_config_with_window_radii(&eff, &new_config, radii, rounded);
+        shadow_update(&c->shadow, c->scene, &eff,
             c->geometry.width + 2 * c->bw, c->geometry.height + 2 * c->bw);
     }
 

@@ -4,6 +4,21 @@ All notable changes to somewm will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- Shadows follow the window's rounded corners: they adopt the object's
+  effective per-corner radii (`follow_corners`, on by default), and
+  `shadow.corner_radius` accepts a per-corner table
+  (`{ corner_radii = {tl, tr, bl, br} }`, named keys, or a plain number)
+  with theme support via `beautiful.shadow_follow_corners` and per-corner
+  `shadow_corner_radius`
+
+### Fixed
+
+- A client with per-corner rounded corners no longer keeps its bottom-left
+  corner square: the crop's bottom-left arc centre used the top-left radius
+  (`rounded_crop_pixels`)
+
 ## [1.4.5] - 2026-09-01
 
 Patch release. 10 commits since 1.4.4: shadows, config checking, and two build

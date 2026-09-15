@@ -356,6 +356,18 @@ The shadow is the object's frame grown by `spread`, moved by
 `radius` pixels. `color` accepts `#RRGGBBAA`; its alpha multiplies
 `opacity`.
 
+By default the shadow follows the window's rounded-corner shape: it adopts
+the object's effective per-corner radii (`corner_radius` on the client/drawin,
+`beautiful.corner_*`), so a window with, say, only its top corners rounded
+casts a shadow with exactly that contour. `corner_radius` on the shadow
+config itself accepts a per-corner table (`{ top_left = N, ... }`,
+`{ corner_radii = {tl, tr, bl, br} }`, or a plain number for all four).
+On the per-object `shadow` table, naming explicit radii switches
+`follow_corners` off for that object; on the theme side, set
+`beautiful.shadow_follow_corners = false` (or `shadow_drawin_follow_corners =
+false`) so every shadow uses its own `shadow_corner_radius` instead of
+following the windows. Per-corner `shadow_corner_radius` values are honoured.
+
 Changed in 1.4.3: `clip_directional` no longer has an effect. The shadow
 is drawn at its offset and fades out on every side; sides fully covered
 by the window are simply not visible. Configs that set it still parse.
