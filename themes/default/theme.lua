@@ -31,6 +31,28 @@ theme.border_color_normal = "#000000"
 theme.border_color_active = "#535d6c"
 theme.border_color_marked = "#91231c"
 
+-- ---------------------------------------------------------------------------
+-- Rounded corners + drop shadows for EVERYTHING, done by the compositor.
+--
+-- This is the KISS way to round windows, the wibar, every wibox/dock and
+-- every menu/tooltip at once -- no per-widget `shape`, no manual work. See
+-- docs/features_test.md (Quick start) for the full story:
+--   * corner_enabled/corner_radius  -> client windows  (§1.3)
+--   * corner_drawin_enabled         -> wiboxes/wibar/menus (§1.3)
+--   * shadow_*                      -> drop shadows that follow the corners
+--                                      of every object (§2.2)
+-- Remove or set to false any line to opt that feature out.
+-- ---------------------------------------------------------------------------
+theme.corner_enabled        = true
+theme.corner_radius         = 10          -- or a per-corner table, §1.5
+theme.corner_drawin_enabled = true
+theme.shadow_enabled        = true
+theme.shadow_radius         = 12
+theme.shadow_offset_x       = 0
+theme.shadow_offset_y       = 4
+theme.shadow_opacity        = 0.55
+theme.shadow_drawin_enabled = true
+
 -- There are other variable sets
 -- overriding the default one when
 -- defined, the sets are:

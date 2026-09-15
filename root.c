@@ -1839,6 +1839,79 @@ composite_paint(struct screenshot_render_data *rdata, cairo_surface_t *buf_surfa
 	cairo_restore(rdata->cr);
 }
 
+/** Composite a solid-color scene rect onto the screenshot surface.
+ * Mirrors composite_scene_buffer_to_cairo for WLR_SCENE_NODE_RECT nodes,
+ * which wlr_scene_node_for_each_buffer() skips entirely. Without this the
+ * software screenshot (root.content()) is missing every shadow's solid
+ * interior, because a drop shadow is assembled from corner and edge
+ * gradient *buffers* plus a set of solid *rect* fills. */
+static void
+composite_scene_rect_to_cairo(struct wlr_scene_rect *rect, int sx, int sy,
+                              void *data)
+{
+	struct screenshot_render_data *rdata = data;
+	double r, g, b, a;
+
+	if (!rect || rect->width <= 0 || rect->height <= 0)
+		return;
+
+	a = rect->color[3];
+	if (a <= 0.0)
+		return;
+
+	/* The scene stores premultiplied color; cairo wants straight color. */
+	r = rect->color[0] / a;
+	g = rect->color[1] / a;
+	b = rect->color[2] / a;
+	if (r < 0.0) r = 0.0;
+	if (g < 0.0) g = 0.0;
+	if (b < 0.0) b = 0.0;
+	if (r > 1.0) r = 1.0;
+	if (g > 1.0) g = 1.0;
+	if (b > 1.0) b = 1.0;
+
+	rdata->painted = true;
+	cairo_save(rdata->cr);
+	cairo_translate(rdata->cr, sx + rdata->offset_x, sy + rdata->offset_y);
+	cairo_set_source_rgba(rdata->cr, r, g, b, a);
+	cairo_rectangle(rdata->cr, 0, 0, rect->width, rect->height);
+	cairo_fill(rdata->cr);
+	cairo_restore(rdata->cr);
+}
+
+/** Recursively composite a scene node and its children onto the screenshot
+ * surface, painting both buffers and solid rects. wlroots only exposes a
+ * buffer-only iterator, which is not enough for screenshots: the nine-patch
+ * shadow uses solid rects for its interior fills. */
+static void
+composite_scene_node_to_cairo(struct wlr_scene_node *node, int lx, int ly,
+                              void *data)
+{
+	if (!node || !node->enabled)
+		return;
+
+	lx += node->x;
+	ly += node->y;
+
+	switch (node->type) {
+	case WLR_SCENE_NODE_BUFFER:
+		composite_scene_buffer_to_cairo(
+			wlr_scene_buffer_from_node(node), lx, ly, data);
+		break;
+	case WLR_SCENE_NODE_RECT:
+		composite_scene_rect_to_cairo(
+			wlr_scene_rect_from_node(node), lx, ly, data);
+		break;
+	case WLR_SCENE_NODE_TREE: {
+		struct wlr_scene_tree *tree = wlr_scene_tree_from_node(node);
+		struct wlr_scene_node *child;
+		wl_list_for_each(child, &tree->children, link)
+			composite_scene_node_to_cairo(child, lx, ly, data);
+		break;
+	}
+	}
+}
+
 /** Callback for wlr_scene_output_for_each_buffer
  * Reads pixels from each scene buffer and composites onto Cairo surface.
  * Handles both SHM buffers (widgets) and GPU buffers (clients).
@@ -2047,9 +2120,9 @@ luaA_root_get_content(lua_State *L)
 	rdata.offset_x = 0;
 	rdata.offset_y = 0;
 
-	/* Iterate scene buffers for client content (GPU-rendered surfaces) */
-	wlr_scene_node_for_each_buffer(&scene->tree.node,
-		composite_scene_buffer_to_cairo, &rdata);
+	/* Iterate scene nodes for client content (GPU-rendered surfaces) and
+	 * solid shadow fills (wlr_scene_rects). */
+	composite_scene_node_to_cairo(&scene->tree.node, 0, 0, &rdata);
 
 	/* Composite widgets in z-order: normal first, then ontop.
 	 * This ensures correct layering where ontop popups appear above titlebars. */

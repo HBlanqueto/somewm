@@ -1210,6 +1210,87 @@ screen_composite_scene_buffer(struct wlr_scene_buffer *buffer,
 	wlr_texture_destroy(texture);
 }
 
+/** Composite a solid-color scene rect onto the screenshot surface.
+ * Mirrors screen_composite_scene_buffer for WLR_SCENE_NODE_RECT nodes,
+ * which wlr_scene_node_for_each_buffer() skips entirely. Without this the
+ * software screenshot (root.content()/screen.content) is missing every
+ * shadow's solid interior, because a drop shadow is assembled from corner
+ * and edge gradient *buffers* plus a set of solid *rect* fills.
+ */
+static void
+screen_composite_scene_rect(struct wlr_scene_rect *rect, int sx, int sy,
+                            struct screen_screenshot_data *sdata)
+{
+	int rel_x, rel_y;
+	double r, g, b, a;
+
+	if (!rect || rect->width <= 0 || rect->height <= 0)
+		return;
+
+	/* Check if rect intersects with screen */
+	if (!box_intersects_screen(sx, sy, rect->width, rect->height,
+	                           sdata->screen_x, sdata->screen_y,
+	                           sdata->screen_w, sdata->screen_h))
+		return;
+
+	rel_x = sx - sdata->screen_x;
+	rel_y = sy - sdata->screen_y;
+
+	a = rect->color[3];
+	if (a <= 0.0)
+		return;
+
+	/* The scene stores premultiplied color; cairo wants straight color. */
+	r = rect->color[0] / a;
+	g = rect->color[1] / a;
+	b = rect->color[2] / a;
+	if (r < 0.0) r = 0.0;
+	if (g < 0.0) g = 0.0;
+	if (b < 0.0) b = 0.0;
+	if (r > 1.0) r = 1.0;
+	if (g > 1.0) g = 1.0;
+	if (b > 1.0) b = 1.0;
+
+	cairo_set_source_rgba(sdata->cr, r, g, b, a);
+	cairo_rectangle(sdata->cr, rel_x, rel_y, rect->width, rect->height);
+	cairo_fill(sdata->cr);
+}
+
+/** Recursively composite a scene node and its children onto the screenshot
+ * surface, painting both buffers and solid rects. wlroots only exposes a
+ * buffer-only iterator, which is not enough for screenshots: the nine-patch
+ * shadow uses solid rects for its interior fills. */
+static void
+screen_composite_scene_node(struct wlr_scene_node *node, int lx, int ly,
+                            void *data)
+{
+	struct screen_screenshot_data *sdata = data;
+
+	if (!node || !node->enabled)
+		return;
+
+	lx += node->x;
+	ly += node->y;
+
+	switch (node->type) {
+	case WLR_SCENE_NODE_BUFFER:
+		screen_composite_scene_buffer(
+			wlr_scene_buffer_from_node(node), lx, ly, sdata);
+		break;
+	case WLR_SCENE_NODE_RECT:
+		screen_composite_scene_rect(
+			wlr_scene_rect_from_node(node), lx, ly, sdata);
+		break;
+	case WLR_SCENE_NODE_TREE: {
+		struct wlr_scene_tree *tree = wlr_scene_tree_from_node(node);
+		struct wlr_scene_node *child;
+		wl_list_for_each(child, &tree->children, link)
+			screen_composite_scene_node(child, lx, ly, data);
+		break;
+	}
+	}
+}
+
 /** Composite widgets within the screen bounds, filtered by ontop state */
 static void
 screen_composite_widgets(cairo_t *cr, int sx, int sy, int sw, int sh, bool ontop_only)
@@ -1296,8 +1377,7 @@ luaA_screen_get_content(lua_State *L, screen_t *s)
 	}
 
 	/* Then iterate scene buffers for client content */
-	wlr_scene_node_for_each_buffer(&scene->tree.node,
-		screen_composite_scene_buffer, &sdata);
+	screen_composite_scene_node(&scene->tree.node, 0, 0, &sdata);
 
 	/* Composite widgets in z-order: normal first, then ontop */
 	screen_composite_widgets(cr, s->geometry.x, s->geometry.y, width, height, false);
