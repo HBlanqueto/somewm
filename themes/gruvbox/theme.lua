@@ -16,9 +16,6 @@ local fg        = "#ebdbb2"
 local white     = "#fbf1c7"
 local red       = "#cc241d"
 local soft_red  = "#fb4934"
-local green     = "#98971a"
-local yellow    = "#d79921"
-local blue      = "#458588"
 local orange    = "#d65d0e"
 
 theme.font = "sans 10"
@@ -84,7 +81,6 @@ theme.menu_height = dpi(24)
 theme.menu_width  = dpi(200)
 
 -- Titlebar icons (Lucide icons, recolored per state)
-local default_path = themes_path .. "default/"
 local icons_path = themes_path .. "../icons/lucide/"
 
 theme.titlebar_close_button_normal              = icons_path .. "x.svg"

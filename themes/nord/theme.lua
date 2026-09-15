@@ -13,14 +13,9 @@ local polar1    = "#2e3440"
 local polar2    = "#3b4252"
 local polar4    = "#4c566a"
 local snow1     = "#d8dee9"
-local snow2     = "#e5e9f0"
 local snow3     = "#eceff4"
-local frost1    = "#8fbcbb"
 local frost2    = "#88c0d0"
 local red       = "#bf616a"
-local orange    = "#d08770"
-local yellow    = "#ebcb8b"
-local green     = "#a3be8c"
 
 theme.font = "sans 10"
 
@@ -85,7 +80,6 @@ theme.menu_height = dpi(24)
 theme.menu_width  = dpi(200)
 
 -- Titlebar icons (Lucide icons, recolored per state)
-local default_path = themes_path .. "default/"
 local icons_path = themes_path .. "../icons/lucide/"
 
 theme.titlebar_close_button_normal              = icons_path .. "x.svg"
