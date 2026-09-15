@@ -7242,6 +7242,12 @@ setup(void)
 	}
 	cursor_mgr = wlr_xcursor_manager_create(cursor_theme, cursor_size);
 
+	/* Load the theme now so root.cursor() and wlr_cursor_set_xcursor() find
+	 * cursor images immediately. Without this the xcursor manager has no
+	 * loaded cursors yet, so root.cursor("left_ptr") warns "invalid cursor"
+	 * and no pointer image is drawn. */
+	wlr_xcursor_manager_load(cursor_mgr, 1.0);
+
 	/*
 	 * wlr_cursor *only* displays an image on screen. It does not move around
 	 * when the pointer moves. However, we can attach input devices to it, and

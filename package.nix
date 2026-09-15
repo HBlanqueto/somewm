@@ -106,7 +106,8 @@ stdenv.mkDerivation {
       wrapProgram $out/bin/somewm \
         --prefix GI_TYPELIB_PATH : "${giTypelibPath}" \
         --prefix LUA_PATH : "${luaEnv}/share/lua/${luaEnv.luaversion}/?.lua;${luaEnv}/share/lua/${luaEnv.luaversion}/?/init.lua" \
-        --prefix LUA_CPATH : "${luaEnv}/lib/lua/${luaEnv.luaversion}/?.so"
+        --prefix LUA_CPATH : "${luaEnv}/lib/lua/${luaEnv.luaversion}/?.so" \
+        --set GDK_PIXBUF_MODULE_FILE "${librsvg.out}/lib/gdk-pixbuf-2.0/2.10.0/loaders.cache"
     '';
 
   passthru.providedSessions = [ "somewm" ];
