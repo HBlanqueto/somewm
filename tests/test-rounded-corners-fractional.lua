@@ -18,7 +18,6 @@
 ---------------------------------------------------------------------------
 
 local awful  = require("awful")
-local gears  = require("gears")
 local async  = require("_async")
 local runner = require("_runner")
 

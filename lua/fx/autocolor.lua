@@ -300,7 +300,7 @@ local function extract(c)
     return mode_from_surface(s, w, h, c)
 end
 
-local function sample(c, st)
+local function sample(c, _st)
     return pcall(extract, c)
 end
 

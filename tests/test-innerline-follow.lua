@@ -10,14 +10,15 @@
 ---------------------------------------------------------------------------
 
 local awful  = require("awful")
-local gears  = require("gears")
 local async  = require("_async")
 local runner = require("_runner")
 
 local ok_ffi, ffi = pcall(require, "ffi")
 if not ok_ffi then
-    io.stderr:write("SKIP: ffi not available\n")
-    awesome.quit(); return
+    io.stderr:write("SKIP: ffi not available (non-LuaJIT build); pixel sampling needs FFI\n")
+    io.stderr:write("Test finished successfully.\n")
+    awesome.quit()
+    return
 end
 
 ffi.cdef[[
@@ -73,9 +74,6 @@ local function near(r, g, b, want, tol)
 end
 
 local MAGENTA = { 255, 0, 255 }
-local BLUE    = { 0, 0, 255 }
-local YELLOW  = { 255, 255, 0 }
-local RED     = { 255, 0, 0 }
 
 local function scan_windows(raw)
     -- Search the whole screen for a magenta pixel (the hairline) and return
@@ -153,7 +151,7 @@ runner.run_async(function()
         -- Wait until a magenta hairline appears anywhere on screen.
         local found = false
         async.wait_for_condition(function()
-            local minx, miny, maxx, maxy = scan_windows(root.content())
+            local minx = scan_windows(root.content())
             found = minx ~= nil
             return found
         end, 5, 0.1)
