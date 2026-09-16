@@ -22,8 +22,8 @@ the widgets and the render/foreground wiring.
     agreeing samples and only when it differs from the committed color by more
     than `autocolor_threshold` CIELAB deltaE. No sampling happens mid-fade.
   * Fade: `awesome.start_animation(fade, ease-out-cubic)` lerps RGB between the
-    committed colors; steps are quantized to an 8-level grid so consumer asset
-    rebuilds stay cached.
+    committed colors; steps lerp continuously across the full 256-level hex
+    range, so consumer asset rebuilds only re-run on a committed change.
   * Readability: `M.foreground()` picks a light/dark color from WCAG-style
     linear luminance; the caller forwards it to its own text/widgets through
     the `fg_cb` callback.
@@ -96,7 +96,7 @@ local function cfg(c)
         fade         = tonumber(opt(c, "fade", "autocolor_fade", 0.35)) or 0.35,
         threshold    = tonumber(opt(c, "threshold", "autocolor_threshold", 18)) or 18,
         debounce     = math.max(1, math.floor(tonumber(opt(c, "debounce", "autocolor_debounce", 2)) or 2)),
-        region       = opt(c, "region", "autocolor_region", "full") == "top" and "top" or "full",
+        region       = opt(c, "region", "autocolor_region", "top") == "top" and "top" or "full",
         thumb        = math.max(8, math.min(256, tonumber(opt(c, "thumb", "autocolor_thumb", 48)) or 48)),
         min_share    = tonumber(opt(c, "min_share", "autocolor_min_share", 0.06)) or 0.06,
         alpha        = math.max(0, math.min(1, tonumber(opt(c, "alpha", "autocolor_alpha", 1)) or 1)),
@@ -149,7 +149,8 @@ local function lerp_hex(a, b, t)
     local ar, ag, ab = rgb(a)
     local br, bg, bb = rgb(b)
     if not ar or not br then return b end
-    -- Quantize intermediate steps (8 grid) so asset rebuilds hit the FIFO cache.
+    -- Intermediate steps lerp continuously across the full 256-level hex range
+    -- (8 bits per channel); the FIFO cache only sees committed color changes.
     local function ic(v) return math.max(0, math.min(255, math.floor(v + 0.5))) end
     return ("#%02x%02x%02x"):format(
         ic(ar + (br - ar) * t), ic(ag + (bg - ag) * t), ic(ab + (bb - ab) * t))
@@ -222,23 +223,28 @@ local function mode_from_surface(surf, src_w, src_h, c, r)
     local ok_crop, crop = pcall(function()
         local cs = cairo.ImageSurface(cairo.Format.ARGB32, sample_w, sample_h)
         local cr = cairo.Context(cs)
+        -- Nearest neighbor: bilinear would blend a dark glyph with the light
+        -- bar around it and skew the dominant-color tally; nearest keeps the
+        -- per-pixel colors that this module balances.
         cr:set_source_surface(surf, 0, 0)
+        local pat = cr:get_source()
+        if pat and pat.set_filter then pat:set_filter(cairo.Filter.NEAREST) end
         cr:scale(sample_w / src_w, sample_h / src_h)
         cr:paint()
         return cs
     end)
     if not ok_crop or not crop then return nil end
 
-    local tmp = os.tmpname()
-    local ok_w = pcall(function() crop:write_to_png(tmp) end)
-    if not ok_w then os.remove(tmp); return nil end
-
-    -- GdkPixbuf is loaded lazily (avoids early display-connection risk).
+    -- In-memory readback: composite the cairo thumb into a GdkPixbuf directly
+    -- (`gdk_pixbuf_get_from_surface`). No temp file, no PNG encode/decode,
+    -- no FIFO-temp-name collision risk. GdkPixbuf stays loaded lazily, so the
+    -- display-connection-early risk keeps out of this path (see get_images).
     local ok_g, GdkPixbuf = pcall(lgi.require, "GdkPixbuf", "2.0")
-    if not ok_g then os.remove(tmp); return nil end
+    if not ok_g then return nil end
 
-    local ok_p, pixbuf = pcall(function() return GdkPixbuf.Pixbuf.new_from_file(tmp) end)
-    os.remove(tmp)
+    local ok_p, pixbuf = pcall(function()
+        return GdkPixbuf.Pixbuf.get_from_surface(crop, 0, 0, sample_w, sample_h)
+    end)
     if not ok_p or not pixbuf then return nil end
 
     local ok_px, px = pcall(function() return pixbuf:get_pixels() end)
@@ -346,6 +352,10 @@ fade = function(c, st, from, to)
     if not rd then return end
     if st.handle then pcall(function() st.handle:cancel() end); st.handle = nil end
 
+    -- Foreground latch starts at the settled foreground so mid-fade we only
+    -- emit on an actual flip (titlebar text flips exactly when it should).
+    local fg_latch = M.foreground(from or to)
+
     local function settle()
         st.shown, st.color = to, to
         rd(to)
@@ -360,6 +370,14 @@ fade = function(c, st, from, to)
             local h = lerp_hex(from, to, t)
             st.shown = h
             rd(h)
+            -- Emit the caller's foreground on every step where the preferred
+            -- candidate flips, not only on settle: title text stays readable
+            -- while the bar itself is still mid-fade.
+            local fg = M.foreground(h)
+            if st.fg_cb and fg ~= fg_latch then
+                fg_latch = fg
+                st.fg_cb(fg)
+            end
         end,
         function()
             st.handle = nil
