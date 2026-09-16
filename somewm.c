@@ -6185,14 +6185,22 @@ requestdecorationmode(struct wl_listener *listener, void *data)
 				decorations_mode_for(c));
 }
 
-/** True if the client draws its own decorations (CSD) so that its
- *  request_move/request_resize signals come from the client headerbar. */
+/** True if the compositor is not drawing server-side titlebars for this
+ *  client, i.e. its request_move/request_resize signals come from its own
+ *  headerbar and must be honoured.
+ *
+ *  Only an explicit SERVER_SIDE negotiation counts as server-decorated.
+ *  A missing decoration object (the client never bound the manager, common
+ *  with GNOME/GTK4 apps) and the initial NONE mode (not yet negotiated)
+ *  both mean the client draws its own decorations and sends these requests
+ *  from its own UI, so they are genuine CSD grabs. */
 static bool
 client_uses_client_side_decorations(Client *c)
 {
-	return c->decoration
-		&& c->decoration->current.mode
-			== WLR_XDG_TOPLEVEL_DECORATION_V1_MODE_CLIENT_SIDE;
+	if (!c->decoration)
+		return true;
+	return c->decoration->current.mode
+		!= WLR_XDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE;
 }
 
 void
@@ -6201,12 +6209,29 @@ requestmove(struct wl_listener *listener, void *data)
 	Client *c = wl_container_of(listener, c, request_move);
 	struct wlr_xdg_toplevel_move_event *e = data;
 
+	wlr_log(WLR_DEBUG, "[CSD-MOVE] requestmove: client=%s decoration=%p mode=%d",
+		client_get_appid(c), c->decoration,
+		c->decoration ? (int)c->decoration->current.mode : -1);
+
 	/* Only honour grab requests from CSD clients holding a valid serial.
 	 * SSD windows never emit these; ignoring them is protocol-safe. */
-	if (!client_uses_client_side_decorations(c))
+	if (!client_uses_client_side_decorations(c)) {
+		wlr_log(WLR_DEBUG, "[CSD-MOVE] SKIP: not CSD (decoration=%p mode=%d)",
+			c->decoration,
+			c->decoration ? (int)c->decoration->current.mode : -1);
 		return;
-	if (!wlr_seat_validate_pointer_grab_serial(seat, e->toplevel->base->surface, e->serial))
+	}
+	if (!wlr_seat_validate_pointer_grab_serial(seat, e->toplevel->base->surface, e->serial)) {
+		wlr_log(WLR_DEBUG, "[CSD-MOVE] SKIP: serial validation failed "
+			"(serial=%u btn_count=%zu grab_serial=%u focus_surface=%p origin=%p)",
+			e->serial,
+			seat->pointer_state.button_count,
+			seat->pointer_state.grab_serial,
+			(void*)seat->pointer_state.focused_surface,
+			(void*)e->toplevel->base->surface);
 		return;
+	}
+	wlr_log(WLR_DEBUG, "[CSD-MOVE] ACCEPTED: starting move for %s", client_get_appid(c));
 	some_client_start_move(c);
 }
 
@@ -6216,10 +6241,29 @@ requestresize(struct wl_listener *listener, void *data)
 	Client *c = wl_container_of(listener, c, request_resize);
 	struct wlr_xdg_toplevel_resize_event *e = data;
 
-	if (!client_uses_client_side_decorations(c))
+	wlr_log(WLR_DEBUG, "[CSD-RESIZE] requestresize: client=%s decoration=%p mode=%d edges=%u",
+		client_get_appid(c), c->decoration,
+		c->decoration ? (int)c->decoration->current.mode : -1, e->edges);
+
+	/* Only honour grab requests from CSD clients holding a valid serial,
+	 * mirroring requestmove(). */
+	if (!client_uses_client_side_decorations(c)) {
+		wlr_log(WLR_DEBUG, "[CSD-RESIZE] SKIP: not CSD (decoration=%p mode=%d)",
+			c->decoration,
+			c->decoration ? (int)c->decoration->current.mode : -1);
 		return;
-	if (!wlr_seat_validate_pointer_grab_serial(seat, e->toplevel->base->surface, e->serial))
+	}
+	if (!wlr_seat_validate_pointer_grab_serial(seat, e->toplevel->base->surface, e->serial)) {
+		wlr_log(WLR_DEBUG, "[CSD-RESIZE] SKIP: serial validation failed "
+			"(serial=%u btn_count=%zu grab_serial=%u focus_surface=%p origin=%p)",
+			e->serial,
+			seat->pointer_state.button_count,
+			seat->pointer_state.grab_serial,
+			(void*)seat->pointer_state.focused_surface,
+			(void*)e->toplevel->base->surface);
 		return;
+	}
+	wlr_log(WLR_DEBUG, "[CSD-RESIZE] ACCEPTED: starting resize for %s", client_get_appid(c));
 	some_client_start_resize(c, e->edges);
 }
 

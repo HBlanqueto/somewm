@@ -1499,8 +1499,10 @@ some_client_start_move(Client *c)
 
 	/* A grab already in progress (eg from the same button press caught by a
 	 * Lua button binding) takes precedence - don't double-start. */
-	if (mousegrabber_isrunning())
+	if (mousegrabber_isrunning()) {
+		wlr_log(WLR_DEBUG, "[CSD-MOVE] some_client_start_move: SKIP grab already running");
 		return;
+	}
 
 	/* Float tiled clients before grabbing, matching GNOME/dwm CSD UX */
 	if (!some_client_get_floating(c))
