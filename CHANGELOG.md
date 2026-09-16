@@ -25,12 +25,9 @@ All notable changes to somewm will be documented in this file.
   widget actually provides it (clienticon draws the icon itself from the
   client)
 
-- Autocolor no longer needs a temp PNG: it reads the sampled strip straight
-  back in memory via the GDK symbol `gdk_pixbuf_get_from_surface` (a GDK/GTK3
-  function, not a gdk-pixbuf one) with a NEAREST crop filter, so a bright glyph
-  can't smear into the dominant-colour tally. Builds without GTK3/Gdk fall back
-  to the classic temp-PNG round-trip instead of silently keeping the theme
-  color
+- Autocolor uses a NEAREST crop filter when downscaling the sampled strip, so
+  a bright glyph can't smear into the dominant-colour tally, and stays on the
+  dependency-free temp-PNG readback (`write_to_png` + `new_from_file`)
 - The titlebar foreground now uses WCAG relative-luminance contrast instead of
   a flat luminance cutoff, and flips per fade step — latched the moment the
   committed colour flips — instead of only on settle

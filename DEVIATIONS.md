@@ -225,6 +225,7 @@ These modifications to AwesomeWM's Lua libraries were necessary for Wayland comp
 | `wibox.layout.overflow` | Scrollable widget layout, port of AwesomeWM PR #3309 (uses the `clip_child_extends` hook in `wibox/hierarchy.lua`) |
 | `somewm` | Lazy-loaded namespace for somewm-only Lua modules |
 | `somewm.layout_animation` | Animated tiling transitions (mwfact, layout switch, spawn/kill) |
+| `fx.autocolor` | Dominant-color titlebar UI: samples `client.content` (a compositor-only scene readback), derives a readable foreground via WCAG luminance, and fades committed colors. Reads the pixel strip back through a temp PNG (`write_to_png` + `new_from_file`); see the module header for the full readback rationale |
 
 ---
 
