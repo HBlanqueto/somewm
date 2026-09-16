@@ -19,6 +19,12 @@ All notable changes to somewm will be documented in this file.
   corner square: the crop's bottom-left arc centre used the top-left radius
   (`rounded_crop_pixels`)
 
+- Tasklists using `awful.widget.clienticon` as their `icon_role` no longer
+  crash with `attempt to call method 'set_image' (a nil value)` once a client
+  has an icon: `awful.widget.common` only calls `set_image` when the icon_role
+  widget actually provides it (clienticon draws the icon itself from the
+  client)
+
 - Autocolor no longer needs a temp PNG: it reads the sampled strip straight
   back in memory via the GDK symbol `gdk_pixbuf_get_from_surface` (a GDK/GTK3
   function, not a gdk-pixbuf one) with a NEAREST crop filter, so a bright glyph

@@ -191,7 +191,12 @@ function common.list_update(w, buttons, label, data, objects, args)
         end
 
         if cache.ib and icon then
-            cache.ib:set_image(icon)
+            -- Some icon_role widgets (e.g. awful.widget.clienticon) draw the
+            -- icon themselves from the client and have no set_image; leave
+            -- them untouched instead of crashing on a nil method.
+            if cache.ib.set_image then
+                cache.ib:set_image(icon)
+            end
         elseif cache.ibm then
             cache.ibm:set_margins(0)
         end
