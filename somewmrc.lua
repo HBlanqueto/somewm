@@ -87,7 +87,7 @@ beautiful.init(gears.filesystem.get_themes_dir() .. theme_name .. "/theme.lua")
 -- two-thirds).
 do
     local cairo = require("lgi").cairo
-    local size = beautiful.menu_height
+    local size = beautiful.menu_height or dpi(15)
     local fg   = beautiful.wallpaper_logo_color or beautiful.fg_focus
     local bg   = beautiful.wibar_bg or beautiful.bg_normal
 
