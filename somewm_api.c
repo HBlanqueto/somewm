@@ -1445,25 +1445,80 @@ some_get_cursor_position(double *x, double *y)
 }
 
 /*
- * Start interactive move of focused client
- * NOTE: This is now a no-op - move/resize is handled by Lua mousegrabber
- * via awful.mouse.client.move() called from client button bindings in rc.lua
+ * Start interactive move of a client (also used for CSD request_move events).
+ * If the client is tiled, float it first so the move is free-form, then defer
+ * to Lua's awful.mouse.client.move() which runs the mousegrabber.
  */
 void
-some_client_start_move(void)
+some_client_start_move(Client *c)
 {
-	/* No-op: Lua mousegrabber handles move */
+	if (!c || c->fullscreen || c->maximized)
+		return;
+
+	lua_State *L = globalconf_get_lua_State();
+	if (!L)
+		return;
+
+	/* Float tiled clients before grabbing, matching GNOME/dwm CSD UX */
+	if (!some_client_get_floating(c))
+		some_client_set_floating(c, 1);
+
+	lua_getglobal(L, "require");
+	lua_pushstring(L, "awful.mouse.client");
+	if (lua_pcall(L, 1, 1, 0) != 0) {
+		wlr_log(WLR_ERROR, "somewm_api: some_client_start_move: %s",
+				lua_tostring(L, -1));
+		lua_pop(L, 1);
+		return;
+	}
+	lua_getfield(L, -1, "move");
+	lua_remove(L, -2);  /* module table */
+	luaA_object_push(L, c);
+	if (lua_pcall(L, 1, 0, 0) != 0) {
+		wlr_log(WLR_ERROR, "somewm_api: some_client_start_move: move() error: %s",
+				lua_tostring(L, -1));
+		lua_pop(L, 1);
+	}
 }
 
 /*
- * Start interactive resize of focused client
- * NOTE: This is now a no-op - move/resize is handled by Lua mousegrabber
- * via awful.mouse.client.resize() called from client button bindings in rc.lua
+ * Start interactive resize of a client (also used for CSD request_resize events).
+ * Floats tiled clients first, then defers to Lua's awful.mouse.client.resize(),
+ * which auto-detects the corner from the cursor position. `edges` (WLR_EDGE_*)
+ * is currently informational: the cursor sits exactly on the requested edge, so
+ * Lua's closest_corner() resolves the same side.
  */
 void
-some_client_start_resize(void)
+some_client_start_resize(Client *c, uint32_t edges)
 {
-	/* No-op: Lua mousegrabber handles resize */
+	(void)edges;
+
+	if (!c || c->fullscreen || c->maximized)
+		return;
+
+	lua_State *L = globalconf_get_lua_State();
+	if (!L)
+		return;
+
+	if (!some_client_get_floating(c))
+		some_client_set_floating(c, 1);
+
+	lua_getglobal(L, "require");
+	lua_pushstring(L, "awful.mouse.client");
+	if (lua_pcall(L, 1, 1, 0) != 0) {
+		wlr_log(WLR_ERROR, "somewm_api: some_client_start_resize: %s",
+				lua_tostring(L, -1));
+		lua_pop(L, 1);
+		return;
+	}
+	lua_getfield(L, -1, "resize");
+	lua_remove(L, -2);  /* module table */
+	luaA_object_push(L, c);
+	if (lua_pcall(L, 1, 0, 0) != 0) {
+		wlr_log(WLR_ERROR, "somewm_api: some_client_start_resize: resize() error: %s",
+				lua_tostring(L, -1));
+		lua_pop(L, 1);
+	}
 }
 
 /*

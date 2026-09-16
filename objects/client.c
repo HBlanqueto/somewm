@@ -1642,6 +1642,7 @@ client_wipe(client_t *c)
     p_delete(&c->name);
     p_delete(&c->alt_name);
     p_delete(&c->startup_id);
+    p_delete(&c->decorations);
 }
 
 /** Change the clients urgency flag.
@@ -1703,6 +1704,7 @@ DO_CLIENT_SET_STRING_PROPERTY2(alt_icon_name, icon_name)
 DO_CLIENT_SET_STRING_PROPERTY(startup_id)
 DO_CLIENT_SET_STRING_PROPERTY(role)
 DO_CLIENT_SET_STRING_PROPERTY(machine)
+DO_CLIENT_SET_STRING_PROPERTY(decorations)
 #undef DO_CLIENT_SET_STRING_PROPERTY
 
 void
@@ -4611,6 +4613,18 @@ luaA_client_set_startup_id(lua_State *L, client_t *c)
     return 0;
 }
 
+static int
+luaA_client_set_decorations(lua_State *L, client_t *c)
+{
+    if (lua_isnil(L, -1)) {
+        client_set_decorations(L, -3, NULL);
+    } else {
+        const char *value = luaL_checkstring(L, -1);
+        client_set_decorations(L, -3, a_strdup(value));
+    }
+    return 0;
+}
+
 LUA_OBJECT_EXPORT_OPTIONAL_PROPERTY(client, client_t, screen, luaA_object_push, NULL)
 LUA_OBJECT_EXPORT_PROPERTY(client, client_t, class, lua_pushstring)
 LUA_OBJECT_EXPORT_PROPERTY(client, client_t, instance, lua_pushstring)
@@ -4648,6 +4662,7 @@ LUA_OBJECT_EXPORT_PROPERTY(client, client_t, maximized_horizontal, lua_pushboole
 LUA_OBJECT_EXPORT_PROPERTY(client, client_t, maximized_vertical, lua_pushboolean)
 LUA_OBJECT_EXPORT_PROPERTY(client, client_t, maximized, lua_pushboolean)
 LUA_OBJECT_EXPORT_PROPERTY(client, client_t, startup_id, lua_pushstring)
+LUA_OBJECT_EXPORT_OPTIONAL_PROPERTY(client, client_t, decorations, lua_pushstring, NULL)
 
 static int
 luaA_client_get_motif_wm_hints(lua_State *L, client_t *c)
@@ -5399,6 +5414,7 @@ client_class_setup(lua_State *L)
         { "client_shape_bounding", NULL, (lua_class_propfunc_t) luaA_client_get_client_shape_bounding, NULL },
         { "client_shape_clip", NULL, (lua_class_propfunc_t) luaA_client_get_client_shape_clip, NULL },
         { "content", NULL, (lua_class_propfunc_t) luaA_client_get_content, NULL },
+        { "decorations", (lua_class_propfunc_t) luaA_client_set_decorations, (lua_class_propfunc_t) luaA_client_get_decorations, (lua_class_propfunc_t) luaA_client_set_decorations },
         { "first_tag", NULL, (lua_class_propfunc_t) luaA_client_get_first_tag, NULL },
         { "focusable", (lua_class_propfunc_t) luaA_client_set_focusable, (lua_class_propfunc_t) luaA_client_get_focusable, (lua_class_propfunc_t) luaA_client_set_focusable },
         { "fullscreen", (lua_class_propfunc_t) luaA_client_set_fullscreen, (lua_class_propfunc_t) luaA_client_get_fullscreen, (lua_class_propfunc_t) luaA_client_set_fullscreen },

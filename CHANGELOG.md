@@ -6,6 +6,16 @@ All notable changes to somewm will be documented in this file.
 
 ### Added
 
+- **Client-side decorations (CSD) support**: GTK3/GTK4/libadwaita apps can now
+  draw their own integrated headerbar instead of receiving SomeWM's server-side
+  titlebars.  Enabled via:
+  - Per-client rule: `c.decorations = "client"` (or `"server"` to force SSD)
+  - Global default: `beautiful.decorations` with C fallback `"server"`
+  - Apps that use CSD get `request_move` / `request_resize` events wired
+    through the same Lua mousegrabber path as titlebar button drags
+  - Composite titlebars are automatically skipped for CSD apps via the
+    `request::titlebars` handler (`c.decorations ~= "client"`)
+
 - Shadows follow the window's rounded corners: they adopt the object's
   effective per-corner radii (`follow_corners`, on by default), and
   `shadow.corner_radius` accepts a per-corner table

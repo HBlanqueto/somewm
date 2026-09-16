@@ -324,6 +324,11 @@ typedef struct
     /** Logging configuration */
     int log_level;  /* wlroots log level: WLR_SILENT, WLR_ERROR, WLR_INFO, WLR_DEBUG */
 
+    /** Default decoration mode: "server" | "client" | NULL.
+     *  Per-client c->decorations overrides this; if nil, beautiful.decorations
+     *  is tried, falling back here. */
+    char *decorations;
+
     /** Command-line arguments (preserved across hot-reload) */
     int argc;
     char **argv;

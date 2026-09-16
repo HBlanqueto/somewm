@@ -336,6 +336,9 @@ void printstatus(void);
 static void powermgrsetmode(struct wl_listener *listener, void *data);
 static void rendermon(struct wl_listener *listener, void *data);
 static void requestdecorationmode(struct wl_listener *listener, void *data);
+/* CSD interactive move/resize (xdg_toplevel.request_move/request_resize) */
+static void requestmove(struct wl_listener *listener, void *data);
+static void requestresize(struct wl_listener *listener, void *data);
 static void requeststartdrag(struct wl_listener *listener, void *data);
 static void requestmonstate(struct wl_listener *listener, void *data);
 void resize(Client *c, struct wlr_box geo, int interact);
@@ -451,6 +454,55 @@ struct wlr_seat *seat;
 KeyboardGroup *kb_group;
 static unsigned int cursor_mode;
 int new_client_placement = 0; /* 0 = master (default), 1 = slave */
+
+/* Border resize-cursor hint: while the pointer is within this many px of a
+ * window edge, show the matching resize cursor. rc.lua keeps the same grip
+ * for the border drag binding - keep both in sync. */
+#define BORDER_CURSOR_GRIP 16
+static bool border_cursor_active = false;
+/* Last cursor the focused app asked for, so the border hint can restore it. */
+static struct wlr_surface *client_cursor_surface = NULL;
+static int32_t client_cursor_hotspot_x = 0;
+static int32_t client_cursor_hotspot_y = 0;
+static char client_cursor_shape[64] = {0};
+static void client_cursor_surface_destroyed(struct wl_listener *listener, void *data);
+static struct wl_listener client_cursor_surface_destroy_listener = {
+	.notify = client_cursor_surface_destroyed,
+};
+
+static void
+client_cursor_forget_surface(void)
+{
+	if (client_cursor_surface) {
+		wl_list_remove(&client_cursor_surface_destroy_listener.link);
+		client_cursor_surface = NULL;
+	}
+}
+
+static void
+client_cursor_surface_destroyed(struct wl_listener *listener, void *data)
+{
+	(void)data;
+	wl_list_remove(&listener->link);
+	client_cursor_surface = NULL;
+}
+
+/* Re-apply the app's cursor after a border-hint override ends. */
+static void
+client_cursor_restore(void)
+{
+	if (!cursor || !cursor_mgr)
+		return;
+
+	if (client_cursor_shape[0]) {
+		wlr_cursor_set_xcursor(cursor, cursor_mgr, client_cursor_shape);
+	} else if (client_cursor_surface) {
+		wlr_cursor_set_surface(cursor, client_cursor_surface,
+				client_cursor_hotspot_x, client_cursor_hotspot_y);
+	} else {
+		wlr_cursor_set_xcursor(cursor, cursor_mgr, "default");
+	}
+}
 
 struct wlr_output_layout *output_layout;
 static struct wlr_box sgeom;
@@ -1281,6 +1333,8 @@ cleanup(void)
 	wlr_xcursor_manager_destroy(cursor_mgr);
 
 	free(selected_root_cursor);
+
+	p_delete(&globalconf.decorations);
 
 	destroykeyboardgroup(&kb_group->destroy, NULL);
 
@@ -3833,6 +3887,8 @@ client_remove_all_listeners(client_t *c)
 		wl_list_remove(&c->map.link);
 		wl_list_remove(&c->unmap.link);
 		wl_list_remove(&c->maximize.link);
+		wl_list_remove(&c->request_move.link);
+		wl_list_remove(&c->request_resize.link);
 	}
 	/* Clean up foreign toplevel handle if not already done by unmapnotify */
 	if (c->toplevel_handle) {
@@ -3890,11 +3946,16 @@ client_reregister_listeners(client_t *c)
 	{
 		struct wlr_xdg_toplevel *toplevel = c->surface.xdg->toplevel;
 
-		/* Core XDG listeners (from createnotify) */
+/* Core XDG listeners (from createnotify) */
 		LISTEN(&toplevel->events.destroy, &c->destroy, destroynotify);
 		LISTEN(&toplevel->events.request_fullscreen, &c->request_fullscreen, fullscreennotify);
 		LISTEN(&toplevel->events.request_maximize, &c->maximize, maximizenotify);
 		LISTEN(&toplevel->events.set_title, &c->set_title, updatetitle);
+		LISTEN(&toplevel->events.request_move, &c->request_move, requestmove);
+		LISTEN(&toplevel->events.request_resize, &c->request_resize, requestresize);
+	/* CSD support: xdg_toplevel.request_move / request_resize (headerbar drags) */
+	LISTEN(&toplevel->events.request_move, &c->request_move, requestmove);
+	LISTEN(&toplevel->events.request_resize, &c->request_resize, requestresize);
 
 		if (c->scene) {
 			/* Mapped: register commit (not initial_commit, since already mapped).
@@ -4627,6 +4688,95 @@ inputdevice(struct wl_listener *listener, void *data)
  * with fallbacks to globalconf defaults. This achieves AwesomeWM compatibility:
  * themes can customize appearance without recompiling C code. */
 
+/* ---- Decoration mode helpers ---- */
+
+/** Read a string property from a client via Lua (`c.decorations`). */
+static const char *
+client_get_decorations_prop(Client *c)
+{
+    lua_State *L = globalconf_get_lua_State();
+    if (!L) return NULL;
+    luaA_object_push(L, c);
+    if (!lua_isuserdata(L, -1)) { lua_pop(L, 1); return NULL; }
+    lua_getfield(L, -1, "decorations");
+    const char *val = lua_isstring(L, -1) ? lua_tostring(L, -1) : NULL;
+    lua_pop(L, 2);
+    return val;
+}
+
+/** Read the global decoration default from `beautiful.decorations`, falling
+ *  back to globalconf.decorations (C default "server"). Returns a malloc'd
+ *  string that the caller must free. */
+static char *
+get_decorations_global_default(void)
+{
+    lua_State *L = globalconf_get_lua_State();
+    if (L) {
+        lua_getglobal(L, "require");
+        lua_pushstring(L, "beautiful");
+        if (lua_pcall(L, 1, 1, 0) == 0 && lua_istable(L, -1)) {
+            lua_getfield(L, -1, "decorations");
+            if (lua_isstring(L, -1)) {
+                const char *s = lua_tostring(L, -1);
+                char *result = strdup(s);
+                lua_pop(L, 2);
+                return result;
+            }
+            lua_pop(L, 1);
+        }
+        lua_pop(L, 1);
+    }
+    return strdup(globalconf.decorations ? globalconf.decorations : "server");
+}
+
+/** Map a decoration mode string to a wlr_xdg enum value.
+ *  Unrecognised values (including NULL) map to the global default. */
+static enum wlr_xdg_toplevel_decoration_v1_mode
+decorations_string_to_wlr_mode(const char *mode)
+{
+    if (mode && strcmp(mode, "client") == 0)
+        return WLR_XDG_TOPLEVEL_DECORATION_V1_MODE_CLIENT_SIDE;
+    /* "server", NULL, or anything else → use global default */
+    return WLR_XDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE;
+}
+
+/** Determine the decoration mode for a client, respecting per-client override,
+ *  beautiful.decorations, and the global C fallback. */
+static enum wlr_xdg_toplevel_decoration_v1_mode
+decorations_mode_for(Client *c)
+{
+    const char *per_client = client_get_decorations_prop(c);
+    char *global_def = get_decorations_global_default();
+    /* Unrecognised per-client values (or NULL/"none") fall back to the global default. */
+    const char *mode = per_client;
+    if (!mode || (strcmp(mode, "server") != 0 && strcmp(mode, "client") != 0))
+        mode = global_def;
+    enum wlr_xdg_toplevel_decoration_v1_mode m = decorations_string_to_wlr_mode(mode);
+    free(global_def);
+    return m;
+}
+
+/** Check if CSD-initiated interactive move/resize is enabled.
+ *  Reads `beautiful.csd_move_resize`; defaults to true.
+ *  Available for Lua callbacks and future compositor logic. */
+static bool __attribute__((unused))
+csd_move_resize_enabled(void)
+{
+    lua_State *L = globalconf_get_lua_State();
+    if (L) {
+        lua_getglobal(L, "require");
+        lua_pushstring(L, "beautiful");
+        if (lua_pcall(L, 1, 1, 0) == 0 && lua_istable(L, -1)) {
+            lua_getfield(L, -1, "csd_move_resize");
+            bool enabled = lua_isboolean(L, -1) ? lua_toboolean(L, -1) : true;
+            lua_pop(L, 2);
+            return enabled;
+        }
+        lua_pop(L, 1);
+    }
+    return true;
+}
+
 /** Get border width from beautiful.border_width or globalconf default */
 static unsigned int
 get_border_width(void)
@@ -5343,6 +5493,16 @@ mapnotify(struct wl_listener *listener, void *data)
 			wlr_scene_node_set_enabled(&c->scene->node, true);
 		}
 	}
+
+	/* Re-apply decoration mode now that manage rules have set c->decorations.
+	 * requestdecorationmode() fires when the decoration object is first
+	 * created, before Lua rules have had a chance to evaluate.  Without
+	 * this re-apply, a rule like
+	 *   { rule={instance="gtk4-app"}, properties={decorations="client"} }
+	 * has no effect because the mode was already forced to SERVER_SIDE. */
+	if (c->decoration && c->surface.xdg->initialized)
+		wlr_xdg_toplevel_decoration_v1_set_mode(c->decoration,
+				decorations_mode_for(c));
 	printstatus();
 
 	/* Ensure keyboard focus is delivered now that the surface is mapped.
@@ -5722,6 +5882,50 @@ motionnotify(uint32_t time, struct wlr_input_device *device, double dx, double d
 		globalconf.mouse_under.ignore_next_enter_leave = false;
 	}
 
+	/* Border resize-cursor hint: over a client, within the grip of an edge,
+	 * show the matching resize cursor (the rc.lua border drag uses the same
+	 * grip). The app's own cursor is remembered and restored on leave. */
+	const char *border_cursor = NULL;
+	if (surface && c && !c->fullscreen && !c->maximized
+			&& cursor_mode == CurNormal && !seat->drag) {
+		int gx = c->geometry.x;
+		int gy = c->geometry.y;
+		int gw = c->geometry.width;
+		int gh = c->geometry.height;
+		double px = cursor->x;
+		double py = cursor->y;
+
+		if (px >= gx && px <= gx + gw && py >= gy && py <= gy + gh) {
+			bool left   = px - gx < BORDER_CURSOR_GRIP;
+			bool right  = (gx + gw) - px < BORDER_CURSOR_GRIP;
+			bool top    = py - gy < BORDER_CURSOR_GRIP;
+			bool bottom = (gy + gh) - py < BORDER_CURSOR_GRIP;
+
+			if (left && top)
+				border_cursor = "top_left_corner";
+			else if (right && top)
+				border_cursor = "top_right_corner";
+			else if (left && bottom)
+				border_cursor = "bottom_left_corner";
+			else if (right && bottom)
+				border_cursor = "bottom_right_corner";
+			else if (left || right)
+				border_cursor = "sb_h_double_arrow";
+			else if (top || bottom)
+				border_cursor = "sb_v_double_arrow";
+		}
+	}
+
+	if (border_cursor) {
+		border_cursor_active = true;
+		wlr_log(WLR_DEBUG, "[CURSOR] border hint: %s", border_cursor);
+		wlr_cursor_set_xcursor(cursor, cursor_mgr, border_cursor);
+	} else if (border_cursor_active) {
+		border_cursor_active = false;
+		wlr_log(WLR_DEBUG, "[CURSOR] border hint off, restoring app cursor");
+		client_cursor_restore();
+	}
+
 	/* If there's no client surface under the cursor, set the cursor image.
 	 * Check if pointer is over a drawin with a custom cursor first. */
 	if (!surface && !seat->drag) {
@@ -5979,7 +6183,45 @@ requestdecorationmode(struct wl_listener *listener, void *data)
 	Client *c = wl_container_of(listener, c, set_decoration_mode);
 	if (c->surface.xdg->initialized)
 		wlr_xdg_toplevel_decoration_v1_set_mode(c->decoration,
-				WLR_XDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE);
+				decorations_mode_for(c));
+}
+
+/** True if the client draws its own decorations (CSD) so that its
+ *  request_move/request_resize signals come from the client headerbar. */
+static bool
+client_uses_client_side_decorations(Client *c)
+{
+	return c->decoration
+		&& c->decoration->current.mode
+			== WLR_XDG_TOPLEVEL_DECORATION_V1_MODE_CLIENT_SIDE;
+}
+
+void
+requestmove(struct wl_listener *listener, void *data)
+{
+	Client *c = wl_container_of(listener, c, request_move);
+	struct wlr_xdg_toplevel_move_event *e = data;
+
+	/* Only honour grab requests from CSD clients holding a valid serial.
+	 * SSD windows never emit these; ignoring them is protocol-safe. */
+	if (!client_uses_client_side_decorations(c))
+		return;
+	if (!wlr_seat_validate_pointer_grab_serial(seat, e->toplevel->base->surface, e->serial))
+		return;
+	some_client_start_move(c);
+}
+
+void
+requestresize(struct wl_listener *listener, void *data)
+{
+	Client *c = wl_container_of(listener, c, request_resize);
+	struct wlr_xdg_toplevel_resize_event *e = data;
+
+	if (!client_uses_client_side_decorations(c))
+		return;
+	if (!wlr_seat_validate_pointer_grab_serial(seat, e->toplevel->base->surface, e->serial))
+		return;
+	some_client_start_resize(c, e->edges);
 }
 
 void
@@ -6895,9 +7137,21 @@ setcursor(struct wl_listener *listener, void *data)
 	 * use the provided surface as the cursor image. It will set the
 	 * hardware cursor on the output that it's currently on and continue to
 	 * do so as the cursor moves between outputs. */
-	if (event->seat_client == seat->pointer_state.focused_client)
-		wlr_cursor_set_surface(cursor, event->surface,
-				event->hotspot_x, event->hotspot_y);
+	if (event->seat_client == seat->pointer_state.focused_client) {
+		/* Remember the app's cursor so a border-grip hint can restore it. */
+		client_cursor_forget_surface();
+		client_cursor_shape[0] = '\0';
+		if (event->surface) {
+			client_cursor_surface = event->surface;
+			client_cursor_hotspot_x = event->hotspot_x;
+			client_cursor_hotspot_y = event->hotspot_y;
+			wl_signal_add(&event->surface->events.destroy,
+					&client_cursor_surface_destroy_listener);
+		}
+		if (!border_cursor_active)
+			wlr_cursor_set_surface(cursor, event->surface,
+					event->hotspot_x, event->hotspot_y);
+	}
 }
 
 void
@@ -6909,9 +7163,14 @@ setcursorshape(struct wl_listener *listener, void *data)
 	/* This can be sent by any client, so we check to make sure this one
 	 * actually has pointer focus first. If so, we can tell the cursor to
 	 * use the provided cursor shape. */
-	if (event->seat_client == seat->pointer_state.focused_client)
-		wlr_cursor_set_xcursor(cursor, cursor_mgr,
-				wlr_cursor_shape_v1_name(event->shape));
+	if (event->seat_client == seat->pointer_state.focused_client) {
+		/* Remember the shape so a border-grip hint can restore it. */
+		const char *name = wlr_cursor_shape_v1_name(event->shape);
+		client_cursor_forget_surface();
+		snprintf(client_cursor_shape, sizeof(client_cursor_shape), "%s", name);
+		if (!border_cursor_active)
+			wlr_cursor_set_xcursor(cursor, cursor_mgr, name);
+	}
 }
 
 /* setfloating() removed - floating state is now managed entirely by Lua property system.
@@ -7362,6 +7621,12 @@ setup(void)
 	globalconf.appearance.fullscreen_bg[2] = 0.0f;
 	globalconf.appearance.fullscreen_bg[3] = 1.0f;
 	globalconf.appearance.bypass_surface_visibility = 0;  /* Idle inhibitors only when visible */
+
+	/* Decoration mode default: "server" | "client".
+	 * Per-client c->decorations overrides this; themes can override via
+	 * beautiful.decorations. */
+	if (!globalconf.decorations)
+		globalconf.decorations = a_strdup("server");
 
 	/* Shadow defaults (disabled by default, theme enables via beautiful.shadow_*) */
 	globalconf.shadow.client.enabled = false;

@@ -1046,8 +1046,42 @@ ruled.client.connect_signal("request::rules", function()
     ruled.client.append_rule {
         id         = "titlebars",
         rule_any   = { type = { "normal", "dialog" } },
-        properties = { titlebars_enabled = true }
+        properties = { titlebars_enabled = function(c)
+            -- Only show SomeWM composite titlebars for apps using server-side
+            -- decorations.  CSD apps draw their own headerbar, so adding a
+            -- titlebar creates a double-bar.  Override per-client by setting
+            -- c.decorations = "server" in an earlier rule.
+            return c.decorations ~= "client"
+        end }
     }
+
+    --[[ ── Per-app decoration rules (commented examples) ──────────────
+     *
+     * CSD apps: GTK3/GTK4/libadwaita apps that draw their own headerbar.
+     * Set decorations = "client" to let them do their own CSD.
+     *
+     * ruled.client.append_rule {
+     *     id         = "csd_gtk4",
+     *     rule       = { class = "gnome-text-editor" },
+     *     properties = { decorations = "client" }
+     * }
+     *
+     * ruled.client.append_rule {
+     *     id         = "csd_firefox",
+     *     rule       = { class = "firefox" },
+     *     properties = { decorations = "client" }
+     * }
+     *
+     * SSD apps: apps that do NOT provide their own headerbar.
+     * Force decorations = "server" (the default, so only needed to override
+     * a global `beautiful.decorations = "client"` setting).
+     *
+     * ruled.client.append_rule {
+     *     id         = "ssd_xterm",
+     *     rule       = { class = "XTerm" },
+     *     properties = { decorations = "server" }
+     * }
+     ───────────────────────────────────────────────────────────────── ]]
 end)
 
 -- Titlebars

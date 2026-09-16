@@ -205,6 +205,8 @@ struct client_t
     struct wl_listener destroy;
     struct wl_listener set_title;
     struct wl_listener request_fullscreen;  /* Renamed to avoid conflict with bool fullscreen */
+    struct wl_listener request_move;   /* xdg_toplevel.request_move (CSD interactive move) */
+    struct wl_listener request_resize; /* xdg_toplevel.request_resize (CSD interactive resize) */
     struct wl_listener set_decoration_mode;
     struct wl_listener destroy_decoration;
 #ifdef XWAYLAND
@@ -253,6 +255,9 @@ struct client_t
      * This matches AwesomeWM where C doesn't store floating state. */
     /** Client name */
     char *name, *alt_name, *icon_name, *alt_icon_name;
+    /** Decoration mode: "server", "client" or NULL (use global default).
+     *  Set via Lua rules (`c.decorations`), consumed by requestdecorationmode(). */
+    char *decorations;
     /** WM_CLASS stuff */
     char *class, *instance;
     /** Window geometry */
@@ -425,6 +430,7 @@ void client_set_transient_for(lua_State *L, int, client_t *);
 void client_set_name(lua_State *L, int, char *);
 void client_set_startup_id(lua_State *L, int, char *);
 void client_set_alt_name(lua_State *L, int, char *);
+void client_set_decorations(lua_State *L, int, char *);
 void client_set_group_window(lua_State *, int, uint32_t);  /* Changed from xcb_window_t */
 /* TODO: Define cairo_surface_array_t or use inline struct */
 /* void client_set_icons(client_t *, cairo_surface_array_t); */
