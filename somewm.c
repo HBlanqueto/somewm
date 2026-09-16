@@ -1084,8 +1084,23 @@ buttonpress(struct wl_listener *listener, void *data)
 	}
 
 	/* If mousegrabber is active, route event to Lua callback */
-	if (event_handle_mousegrabber(cursor->x, cursor->y, 0))
+	if (event_handle_mousegrabber(cursor->x, cursor->y, 0)) {
+		/* Keep the wlr seat's button tracking in sync even though the Lua
+		 * grabber consumed this event. The press that STARTED the grab is a
+		 * normal press already forwarded to the client below (e.g. a CSD
+		 * headerbar drag): wlroots records it as pressed in its button
+		 * array. When the grabber swallows the matching release, wlr still
+		 * thinks the button is held and dedupes every later press of that
+		 * button (wlr_seat_pointer_notify_button returns without
+		 * delivering), so the next headerbar drag never reaches the client.
+		 * Forwarding the release (only releases: registered buttons balance
+		 * out, unregistered ones are no-ops) keeps the array consistent. */
+		if (event->state == WL_POINTER_BUTTON_STATE_RELEASED) {
+			wlr_seat_pointer_notify_button(seat,
+					event->time_msec, event->button, event->state);
+		}
 		return; /* Don't process event further */
+	}
 
 	switch (event->state) {
 	case WL_POINTER_BUTTON_STATE_PRESSED: {
