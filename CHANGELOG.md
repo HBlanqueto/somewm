@@ -19,6 +19,16 @@ All notable changes to somewm will be documented in this file.
   corner square: the crop's bottom-left arc centre used the top-left radius
   (`rounded_crop_pixels`)
 
+- Autocolor no longer needs a temp PNG: it reads the sampled strip straight
+  back in memory via GdkPixbuf (`get_from_surface`) with a NEAREST crop filter,
+  so a bright glyph can't smear into the dominant-colour tally. GdkPixbuf
+  builds without cairo support (no `get_from_surface`, e.g. nixpkgs) fall back
+  to the classic temp-PNG round-trip instead of silently keeping the theme
+  color
+- The titlebar foreground now uses WCAG relative-luminance contrast instead of
+  a flat luminance cutoff, and flips per fade step — latched the moment the
+  committed colour flips — instead of only on settle
+
 ## [1.4.5] - 2026-09-01
 
 Patch release. 10 commits since 1.4.4: shadows, config checking, and two build

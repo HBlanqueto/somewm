@@ -235,15 +235,29 @@ local function mode_from_surface(surf, src_w, src_h, c, r)
     end)
     if not ok_crop or not crop then return nil end
 
-    -- In-memory readback: composite the cairo thumb into a GdkPixbuf directly
-    -- (`gdk_pixbuf_get_from_surface`). No temp file, no PNG encode/decode,
-    -- no FIFO-temp-name collision risk. GdkPixbuf stays loaded lazily, so the
+    -- Readback: composite the cairo thumb into a GdkPixbuf directly
+    -- (`gdk_pixbuf_get_from_surface`) when the GdkPixbuf build ships it — no
+    -- temp file, no PNG encode/decode, no FIFO-temp-name collision risk.
+    -- Not every build has that function (it needs cairo support; nixpkgs can
+    -- strip it), so fall back to the classic temp-PNG round-trip when the
+    -- in-memory path is unavailable. GdkPixbuf stays loaded lazily, so the
     -- display-connection-early risk keeps out of this path (see get_images).
     local ok_g, GdkPixbuf = pcall(lgi.require, "GdkPixbuf", "2.0")
     if not ok_g then return nil end
 
     local ok_p, pixbuf = pcall(function()
-        return GdkPixbuf.Pixbuf.get_from_surface(crop, 0, 0, sample_w, sample_h)
+        local get = GdkPixbuf.Pixbuf.get_from_surface
+        if get then
+            local ok_s, pb = pcall(get, crop, 0, 0, sample_w, sample_h)
+            if ok_s and pb then return pb end
+        end
+        -- Fallback for GdkPixbuf builds without the cairo-backed readback.
+        local tmp = os.tmpname()
+        local ok_w = pcall(function() crop:write_to_png(tmp) end)
+        if not ok_w then os.remove(tmp); return nil end
+        local ok_f, pb = pcall(GdkPixbuf.Pixbuf.new_from_file, tmp)
+        os.remove(tmp)
+        return ok_f and pb or nil
     end)
     if not ok_p or not pixbuf then return nil end
 
