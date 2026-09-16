@@ -2095,6 +2095,8 @@ createnotify(struct wl_listener *listener, void *data)
 	LISTEN(&toplevel->events.request_fullscreen, &c->request_fullscreen, fullscreennotify);
 	LISTEN(&toplevel->events.request_maximize, &c->maximize, maximizenotify);
 	LISTEN(&toplevel->events.set_title, &c->set_title, updatetitle);
+	LISTEN(&toplevel->events.request_move, &c->request_move, requestmove);
+	LISTEN(&toplevel->events.request_resize, &c->request_resize, requestresize);
 
 	/* Note: property_register_wayland_listeners() is called in mapnotify() after
 	 * the client is fully registered in Lua. Calling it here would fail because
@@ -3953,9 +3955,6 @@ client_reregister_listeners(client_t *c)
 		LISTEN(&toplevel->events.set_title, &c->set_title, updatetitle);
 		LISTEN(&toplevel->events.request_move, &c->request_move, requestmove);
 		LISTEN(&toplevel->events.request_resize, &c->request_resize, requestresize);
-	/* CSD support: xdg_toplevel.request_move / request_resize (headerbar drags) */
-	LISTEN(&toplevel->events.request_move, &c->request_move, requestmove);
-	LISTEN(&toplevel->events.request_resize, &c->request_resize, requestresize);
 
 		if (c->scene) {
 			/* Mapped: register commit (not initial_commit, since already mapped).
