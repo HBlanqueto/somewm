@@ -20,9 +20,9 @@ All notable changes to somewm will be documented in this file.
   (`rounded_crop_pixels`)
 
 - Autocolor no longer needs a temp PNG: it reads the sampled strip straight
-  back in memory via GdkPixbuf (`get_from_surface`) with a NEAREST crop filter,
-  so a bright glyph can't smear into the dominant-colour tally. GdkPixbuf
-  builds without cairo support (no `get_from_surface`, e.g. nixpkgs) fall back
+  back in memory via the GDK symbol `gdk_pixbuf_get_from_surface` (a GDK/GTK3
+  function, not a gdk-pixbuf one) with a NEAREST crop filter, so a bright glyph
+  can't smear into the dominant-colour tally. Builds without GTK3/Gdk fall back
   to the classic temp-PNG round-trip instead of silently keeping the theme
   color
 - The titlebar foreground now uses WCAG relative-luminance contrast instead of
