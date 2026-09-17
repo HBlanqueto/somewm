@@ -144,6 +144,18 @@ local align_map = {
 -- @beautiful beautiful.wibar_border_color
 -- @tparam string border_color
 
+--- The wibar inner hairline toggle.
+-- @beautiful beautiful.wibar_border_inner_enabled
+-- @tparam[opt] boolean border_inner_enabled
+
+--- The wibar inner hairline width.
+-- @beautiful beautiful.wibar_border_inner_width
+-- @tparam[opt] integer border_inner_width
+
+--- The wibar inner hairline color.
+-- @beautiful beautiful.wibar_border_inner_color
+-- @tparam[opt] string border_inner_color
+
 --- If the wibar is to be on top of other windows.
 -- @beautiful beautiful.wibar_ontop
 -- @tparam boolean ontop
@@ -544,6 +556,9 @@ end
 -- @usebeautiful beautiful.wibar_favor_vertical
 -- @usebeautiful beautiful.wibar_border_width
 -- @usebeautiful beautiful.wibar_border_color
+-- @usebeautiful beautiful.wibar_border_inner_enabled
+-- @usebeautiful beautiful.wibar_border_inner_width
+-- @usebeautiful beautiful.wibar_border_inner_color
 -- @usebeautiful beautiful.wibar_ontop
 -- @usebeautiful beautiful.wibar_cursor
 -- @usebeautiful beautiful.wibar_opacity
@@ -601,7 +616,9 @@ function awfulwibar.new(args)
     for _, prop in ipairs {
         "border_width", "border_color", "font", "opacity", "ontop", "cursor",
         "bgimage", "bg", "fg", "type", "stretch", "shape", "margins", "align",
-        "shadow"
+        "shadow",
+        -- Inner hairline, mirroring the outer border's `wibar_border_*` keys.
+        "border_inner_enabled", "border_inner_width", "border_inner_color"
     } do
         if (args[prop] == nil) and beautiful["wibar_"..prop] ~= nil then
             args[prop] = beautiful["wibar_"..prop]
