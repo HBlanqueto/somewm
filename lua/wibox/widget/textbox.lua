@@ -15,11 +15,27 @@ local gdebug = require("gears.debug")
 local beautiful = require("beautiful")
 local lgi = require("lgi")
 local gtable = require("gears.table")
+local gcolor = require("gears.color")
 local Pango = lgi.Pango
 local PangoCairo = lgi.PangoCairo
 local setmetatable = setmetatable
 
 local textbox = { mt = {} }
+
+--- Rewrite `rgb()`/`rgba()` color attribute values inside Pango markup to the
+-- `#rrggbbaa` form Pango understands. Widgets build markup by concatenating
+-- theme colors, so this is where functional colors become renderable.
+local function pangoize_colors(markup)
+    if type(markup) ~= "string" or not string.find(markup, "rgb", 1, true) then
+        return markup
+    end
+    return (string.gsub(markup, "rgba?%b()", function(fn)
+        if gcolor.parse_color(fn) then
+            return gcolor.to_rgba_string(fn) or fn
+        end
+        return fn
+    end))
+end
 
 --- Set the DPI of a Pango layout
 local function setup_dpi(box, dpi)
@@ -158,7 +174,7 @@ function textbox:set_markup_silently(text)
         return true
     end
 
-    local attr, parsed = Pango.parse_markup(text, -1, 0)
+    local attr, parsed = Pango.parse_markup(pangoize_colors(text), -1, 0)
     -- In case of error, attr is false and parsed is a GLib.Error instance.
     if not attr then
         return false, parsed.message or tostring(parsed)
@@ -549,7 +565,7 @@ function textbox.get_markup_geometry(text, s, font)
     local dpi_scale = beautiful.xresources.get_dpi(s)
     pctx:set_resolution(dpi_scale)
     playout:context_changed()
-    local attr, parsed = Pango.parse_markup(text, -1, 0)
+    local attr, parsed = Pango.parse_markup(pangoize_colors(text), -1, 0)
     playout.attributes, playout.text = attr, parsed
     local _, logical = playout:get_pixel_extents()
     return logical

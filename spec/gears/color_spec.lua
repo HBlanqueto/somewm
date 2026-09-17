@@ -96,6 +96,67 @@ describe("gears.color", function()
                 gray(0x8000/0xffff, 0x8000/0xffff, "#8000800080008000")
             end)
         end)
+
+        describe("functional rgb()/rgba()", function()
+            local function assert_channels(r, g, b, a, input)
+                local o_r, o_g, o_b, o_a, unused = color.parse_color(input)
+                assert.is.same(o_r, r)
+                assert.is.same(o_g, g)
+                assert.is.same(o_b, b)
+                assert.is.same(o_a, a)
+                assert.is_nil(unused)
+            end
+
+            it("rgb integers", function()
+                assert_channels(1, 0, 0, 1, "rgb(255,0,0)")
+            end)
+
+            it("rgb with spaces", function()
+                assert_channels(1, 1, 1, 1, "rgb( 255 , 255 , 255 )")
+            end)
+
+            it("rgba alpha", function()
+                assert_channels(1, 1, 1, 0.5, "rgba(255,255,255,0.5)")
+            end)
+
+            it("rgba with 3 channels", function()
+                assert_channels(0, 0, 0, 1, "rgba(0,0,0)")
+            end)
+
+            it("fractions", function()
+                assert_channels(0.5, 0.25, 0.1, 0.9, "rgba(0.5, 0.25, 0.1, 0.9)")
+            end)
+
+            it("integers are 0-255, not fractions", function()
+                assert_channels(1/0xff, 1/0xff, 1/0xff, 1, "rgb(1,1,1)")
+            end)
+
+            it("clamping", function()
+                assert_channels(1, 0, 1, 1, "rgba(256,-5,300,2)")
+            end)
+
+            it("roundtrip via to_rgba_string", function()
+                assert.is.same("#ffffffcc", color.to_rgba_string("rgba(255,255,255,0.8)"))
+            end)
+
+            describe("invalid", function()
+                local function test_nil(input)
+                    assert.is_nil(color.parse_color(input))
+                end
+
+                it("wrong arity", function()
+                    test_nil("rgb(1,2)")
+                end)
+
+                it("too many channels", function()
+                    test_nil("rgba(1,2,3,4,5)")
+                end)
+
+                it("empty", function()
+                    test_nil("rgb()")
+                end)
+            end)
+        end)
     end)
 
     local function test_pattern_stops(pattern, stops)
@@ -285,6 +346,14 @@ describe("gears.color", function()
         it("#fedcba98765432", function()
             -- Only one, two or four characters per channel are supported
             assert.is.same("black", color.ensure_pango_color("#fedcba98765432"))
+        end)
+
+        it("rgba() is converted to hex", function()
+            assert.is.same("#ffffff7f", color.ensure_pango_color("rgba(255,255,255,0.5)"))
+        end)
+
+        it("rgb() is converted to hex", function()
+            assert.is.same("#ff0000ff", color.ensure_pango_color("rgb(255,0,0)"))
         end)
 
         it("fallback", function()

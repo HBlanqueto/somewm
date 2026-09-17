@@ -55,8 +55,58 @@ local color = { mt = {} }
 local pattern_cache
 local color_string_cache = setmetatable({}, { __mode = "k" })
 
+--- Parse a CSS-style `rgb(r,g,b)` / `rgba(r,g,b[,a])` functional color.
+--
+-- Mirrors the compositor's `color.c`: each of R/G/B is either a 0-255 integer
+-- ("255") or a 0.0-1.0 fraction ("0.5"), and alpha is always a 0.0-1.0
+-- fraction (CSS semantics, "1" = fully opaque). `rgba()` accepts 3 or 4
+-- channels; `rgb()` requires exactly 3.
+--
+-- @param col The color string (starts with "rgb")
+-- @return r, g, b, a normalized to 0..1, or nil if not a functional color
+local function parse_functional_color(col)
+    local fn, args = string.match(col, "^%s*(rgb%a?)%s*%((.-)%)%s*$")
+    if not fn then return nil end
+
+    local chans = {}
+    for part in string.gmatch(args, "[^,]+") do
+        local s = string.match(part, "^%s*(.-)%s*$")
+        local v = tonumber(s)
+        if not v then return nil end
+        chans[#chans + 1] = {
+            value = v,
+            -- An all-digit channel is a 0-255 integer; anything else is a
+            -- 0.0-1.0 fraction.
+            is_int = string.match(s, "^%d+$") ~= nil,
+        }
+    end
+
+    local has_alpha = fn == "rgba"
+    if has_alpha then
+        if #chans ~= 4 and #chans ~= 3 then return nil end
+    elseif #chans ~= 3 then
+        return nil
+    end
+
+    local function channel(ch)
+        local v = ch.value
+        if ch.is_int then
+            return math.max(0, math.min(v, 255)) / 255
+        end
+        return math.max(0, math.min(v, 1))
+    end
+
+    local a = 1.0
+    if #chans == 4 then
+        a = math.max(0, math.min(chans[4].value, 1))
+    end
+
+    return channel(chans[1]), channel(chans[2]), channel(chans[3]), a
+end
+
 --- Parse a HTML-color.
--- This function can parse colors like `#rrggbb` and `#rrggbbaa` and also `red`.
+-- This function can parse colors like `#rrggbb` and `#rrggbbaa` and also `red`
+-- and the functional forms `rgb(r,g,b)` / `rgba(r,g,b[,a])`.
 -- Max 4 chars per channel.
 --
 -- @param col The color to parse
@@ -96,16 +146,21 @@ function color.parse_color(col)
             table.insert(rgb, 1)
         end
     else
-        local c = Pango.Color()
-        if not c:parse(col) then
-            return nil
+        local r, g, b, a = parse_functional_color(col)
+        if r then
+            rgb = { r, g, b, a }
+        else
+            local c = Pango.Color()
+            if not c:parse(col) then
+                return nil
+            end
+            rgb = {
+                c.red / 0xffff,
+                c.green / 0xffff,
+                c.blue / 0xffff,
+                1.0
+            }
         end
-        rgb = {
-            c.red / 0xffff,
-            c.green / 0xffff,
-            c.blue / 0xffff,
-            1.0
-        }
     end
     assert(#rgb == 4, col)
     return unpack(rgb)
@@ -430,6 +485,11 @@ function color.ensure_pango_color(check_color, fallback)
     local len = #check_color
     if string.match(check_color, "^#%x+$") and (len == 5 or len == 9 or len == 17) then
         return check_color
+    end
+    -- rgb()/rgba() parse in gears.color but not in Pango, so hand Pango the
+    -- equivalent #rrggbbaa form instead.
+    if parse_functional_color(check_color) then
+        return color.to_rgba_string(check_color, fallback) or fallback or "black"
     end
     return Pango.Color.parse(Pango.Color(), check_color) and check_color or fallback or "black"
 end

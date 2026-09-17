@@ -145,6 +145,31 @@ describe("wibox.widget.textbox", function()
             assert.is.equal(pango_geometry.height, actual_textbox_height)
         end)
 
+        it("accepts rgba() color attributes in markup", function()
+            local ok, err = widget:set_markup_silently(
+                "<span color=\"rgba(255,255,255,0.8)\">Hello</span>")
+            assert.is_true(ok, err or "")
+        end)
+
+        it("accepts rgb() color attributes in markup", function()
+            local ok, err = widget:set_markup_silently(
+                "<span foreground=\"rgb(255,0,0)\">Hi</span>")
+            assert.is_true(ok, err or "")
+        end)
+
+        it("still rejects invalid markup", function()
+            local ok, err = widget:set_markup_silently("<span color=\"zzz\">bad</span>")
+            assert.is_false(ok)
+            assert.is.string(err)
+        end)
+
+        it("geometry with rgba() markup", function()
+            local g = textbox.get_markup_geometry(
+                "<span color=\"rgba(255,255,255,0.5)\">Measured</span>", 1)
+            assert.is_true(g.width > 0)
+            assert.is_true(g.height > 0)
+        end)
+
     end)
 
 end)

@@ -207,6 +207,8 @@ These modifications to AwesomeWM's Lua libraries were necessary for Wayland comp
 | `naughty/notification.lua` | Property getter falls back to `beautiful.notification_*` between preset and defaults; presets no longer merge in `config.defaults`, so `n.preset.<field>` can be nil | Upstream ignores `beautiful.notification_*`; merged defaults shadowed the beautiful lookup |
 | `naughty/widget/icon.lua` | Clears the image when a notification's icon is unset; disconnects the signal it actually connects | Upstream leaves a stale image and leaks the signal connection |
 | `naughty/layout/box.lua` | Caches the notification position at attach time for use after the weak ref is GC'd | Upstream falls back to a hardcoded `"top_right"` |
+| `gears/color.lua` | `parse_color` and `ensure_pango_color` accept the CSS functional forms `rgb(r,g,b)` and `rgba(r,g,b[,a])` | Matches the compositor's `color.c` parser (integer 0-255 or 0.0-1.0 channels, fraction alpha), so one color syntax works across `gears.color`, Pango markup and compositor properties |
+| `wibox/widget/textbox.lua` | `set_markup_silently`/`get_markup_geometry` rewrite `rgb()`/`rgba()` color attributes to `#rrggbbaa` before `Pango.parse_markup` | Pango only understands hex/named colors; without this, markup embedding an `rgba()` color (tasklist, menu, prompt, naughty, lockscreen) fails to parse and renders invisible |
 
 ### Removed globals
 
