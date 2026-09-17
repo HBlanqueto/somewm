@@ -38,7 +38,65 @@ local module = {
 
 local placeholder_w = nil
 
-local function show_placeholder(geo)
+-- Resolve the per-corner radii ({tl, tr, br, bl}) the snap preview should
+-- round its silhouette with.  Mirrors how the dragged client's own shadow
+-- picks radii (shadow_config_with_window_radii): with snap_follow_corners on
+-- the window's corner_radius wins, otherwise the themed shadow_corner_radius
+-- applies.  All zeros means a plain square.
+local function snapped_radii(c)
+    if beautiful.snap_follow_corners ~= false then
+        local r = c and c.corner_radius
+        if type(r) == "table" and r.enabled then
+            if r.radius then
+                return { r.radius, r.radius, r.radius, r.radius }
+            end
+            local t = r.corner_radii
+            if t then
+                return { t[1], t[2], t[3], t[4] }
+            end
+        end
+        return { 0, 0, 0, 0 }
+    end
+
+    local r = beautiful.shadow_corner_radius
+    if type(r) == "number" then
+        return { r, r, r, r }
+    end
+    if type(r) == "table" then
+        if r.radius then
+            return { r.radius, r.radius, r.radius, r.radius }
+        end
+        local t = r.corner_radii
+        if t then
+            return { t[1], t[2], t[3], t[4] }
+        end
+        if tonumber(r[1]) then
+            return { r[1], r[2], r[3], r[4] }
+        end
+        return { r.tl or 0, r.tr or 0, r.bl or 0, r.br or 0 }
+    end
+    return { 0, 0, 0, 0 }
+end
+
+-- A rectangle whose four corners may carry different radii ({tl,tr,br,bl}),
+-- like the per-corner contours client.corner_radius describes.
+local function rounded_rect_per_corner(cr, w, h, radii)
+    local half = math.min(w, h) / 2
+    local tl, tr, br, bl = math.min(radii[1], half), math.min(radii[2], half),
+                           math.min(radii[3], half), math.min(radii[4], half)
+    if tl == 0 and tr == 0 and br == 0 and bl == 0 then
+        cr:rectangle(0, 0, w, h)
+        return
+    end
+    cr:new_sub_path()
+    cr:arc(tl, tl, tl, math.pi, 3 * math.pi / 2)          -- top-left
+    cr:arc(w - tr, tr, tr, 3 * math.pi / 2, 2 * math.pi)  -- top-right
+    cr:arc(w - br, h - br, br, 2 * math.pi, math.pi / 2)  -- bottom-right
+    cr:arc(bl, h - bl, bl, math.pi / 2, math.pi)          -- bottom-left
+    cr:close_path()
+end
+
+local function show_placeholder(geo, c)
     if not geo then
         if placeholder_w then
             placeholder_w.visible = false
@@ -46,14 +104,27 @@ local function show_placeholder(geo)
         return
     end
 
-    placeholder_w = placeholder_w or wibox {
-        ontop  = true,
-        bg     = color(beautiful.snap_bg or beautiful.bg_urgent or "#ff0000"),
-        shadow = false,
-    }
+    -- Re-read the fill color and toggles on every show so live theme/accent
+    -- changes apply.
+    local bg = color(beautiful.snap_bg or beautiful.bg_urgent or "#ff0000")
+    placeholder_w = placeholder_w or wibox { ontop = true, bg = bg }
+    placeholder_w.bg = bg
+    placeholder_w.drawin.shadow = beautiful.snap_shadow ~= false
+    placeholder_w.border_inner_enabled = beautiful.snap_border_inner ~= false
 
-    -- Re-read the fill color on every show so live theme/accent changes apply.
-    placeholder_w.bg = color(beautiful.snap_bg or beautiful.bg_urgent or "#ff0000")
+    -- The hairline and the drop shadow follow the same per-corner radii as
+    -- the mask, so the whole preview keeps one silhouette.
+    local radii = snapped_radii(c)
+    if radii[1] == 0 and radii[2] == 0 and radii[3] == 0 and radii[4] == 0 then
+        placeholder_w.drawin.corner_radius = false
+    elseif radii[1] == radii[2] and radii[1] == radii[3] and radii[1] == radii[4] then
+        placeholder_w.drawin.corner_radius = { enabled = true, radius = radii[1] }
+    else
+        placeholder_w.drawin.corner_radius = {
+            enabled = true,
+            corner_radii = { radii[1], radii[2], radii[3], radii[4] },
+        }
+    end
 
     placeholder_w:geometry(geo)
 
@@ -67,9 +138,9 @@ local function show_placeholder(geo)
     cr:set_operator(cairo.Operator.SOURCE)
     cr:set_source_rgba(1,1,1,1)
 
-    -- Plain filled square by default: no rounded corners, no border. A theme
-    -- can opt back into the stroked ring by setting snap_border_width > 0, and
-    -- may override the silhouette with snap_shape in either mode.
+    -- Rounded square by default, following the dragged window's corners.  A
+    -- theme can opt into the stroked ring via snap_border_width > 0 and may
+    -- override the silhouette with snap_shape in either mode.
     local line_width = beautiful.snap_border_width
     if line_width and line_width > 0 then
         cr:set_line_width(beautiful.xresources.apply_dpi(line_width))
@@ -81,7 +152,7 @@ local function show_placeholder(geo)
         cr:stroke()
     else
         local f = beautiful.snap_shape or function()
-            cr:rectangle(0, 0, geo.width, geo.height)
+            rounded_rect_per_corner(cr, geo.width, geo.height, radii)
         end
         f(cr, geo.width, geo.height)
         cr:fill()
@@ -149,7 +220,7 @@ local function show_snap_for(c)
         honor_padding  = true,
         pretend        = true,
         margins        = beautiful.snapper_gap
-    }))
+    }), c)
     current_snap_visible = true
 end
 
@@ -289,6 +360,9 @@ end
 -- @usebeautiful beautiful.snap_bg
 -- @usebeautiful beautiful.snap_border_width
 -- @usebeautiful beautiful.snap_shape
+-- @usebeautiful beautiful.snap_shadow
+-- @usebeautiful beautiful.snap_border_inner
+-- @usebeautiful beautiful.snap_follow_corners
 -- @usebeautiful beautiful.snapper_gap
 function module.snap(c, snap, x, y, fixed_x, fixed_y)
     snap = snap or module.default_distance

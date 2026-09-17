@@ -25,6 +25,33 @@ make test-fast
 make test-unit
 ```
 
+## Config Assumptions
+
+Tests run against the minimal `tests/rc.lua` (no wibar, no rules, floating
+layout). To run against a different config, pass `TEST_RC_LUA`:
+
+```bash
+TEST_RC_LUA=somewmrc.lua ./tests/run-integration.sh tests/test-*.lua
+```
+
+Beware: tiling layouts apply to tests too. Any test that drags a window
+(headerbar/titlebar move, resize) must **float the client first**, because a
+tiling config sizes a lone client to the full tag, and a tiled or maximized
+client ignores `request_move`/`request_resize`:
+
+```lua
+c.floating = true
+c.maximized = false
+async.sleep(0.1)
+c:geometry({ x = 200, y = 150, width = 640, height = 420 })
+async.sleep(0.2)
+local initial = c:geometry()
+```
+
+For a live (visual) session on a running compositor — e.g. to eyeball behavior
+under the stock config — use `HEADLESS=0` (default): the compositor appears as
+a nested window on the parent display.
+
 ## Test Structure
 
 Tests use a step-based runner. Each step is a function that returns:

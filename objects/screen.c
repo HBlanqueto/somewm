@@ -1579,23 +1579,11 @@ luaA_screen_viewports(lua_State *L)
 }
 
 /** screen._scan_quiet() - Quietly re-scan screens, without public signals.
- *
- * Private API used by awful.screen.dpi's "scanned" handler when it fires with
- * no screens and no viewports: upstream AwesomeWM re-runs the RandR/Xinerama
- * scan here to repopulate its viewport cache without emitting
- * `scanning`/`scanned` (which would recurse into the caller).
- *
- * somewm keeps no separate viewport cache -- screen._viewports() derives its
- * list directly from the compositor's live monitor list (`mons`), which the
- * wlroots backend keeps current -- so there is no disconnected cache to
- * refresh. Emitting property::_viewports here would be wrong as well: its Lua
- * handler asserts a non-empty list, and this is only ever reached when that
- * list is empty.
- *
- * The dpi.lua caller therefore falls through to its own fallback
- * (create_screen_handler / fake_add), which restores a screen instead of
- * aborting the "scanned" handler -- the failure mode this method's absence
- * caused (0 screens / 0 tags after a hot-reload race).
+ * No-op in somewm: screen._viewports() is derived live from the compositor's
+ * monitor list, so there is no stale viewport cache to refresh. Kept so
+ * awful.screen.dpi's "scanned" handler can call it and fall through to
+ * create_screen_handler / fake_add instead of aborting the scan.
+ * \return Number of values pushed on stack (0).
  */
 static int
 luaA_screen_scan_quiet(lua_State *L)

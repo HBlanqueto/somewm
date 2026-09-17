@@ -361,9 +361,8 @@ end
 local function new(args)
     args = args or {}
 
-    -- Generic inner-hairline defaults, the wibox counterpart of the wibar's
-    -- `wibar_border_inner_*` keys. `awful.wibar` fills its own keys into args
-    -- before calling this, so wibar-specific values win over these.
+    -- Generic inner-hairline defaults matching the `wibar_border_inner_*`
+    -- keys; awful.wibar fills its own keys into args first, so those win.
     for _, prop in ipairs { "border_inner_enabled", "border_inner_width",
                             "border_inner_color" } do
         if args[prop] == nil and beautiful["wibox_"..prop] ~= nil then

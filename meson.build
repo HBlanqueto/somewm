@@ -628,9 +628,8 @@ test_content_pattern_client = executable(
 
 # Test XDG client that commits an over-scaled buffer presented via viewport
 # (fractional-scale layout); verifies rounded-corner crops against the
-# displayed box rather than buffer/scale. The source is a local-only test
-# helper (kept out of the repo for now): build it when present, skip it on a
-# clean checkout that does not carry it.
+# displayed box rather than buffer/scale. Locally-authored: only built when
+# the source is present.
 fs = import('fs')
 if fs.exists('tests/test-fractional-pattern-client.c')
   test_fractional_pattern_client = executable(

@@ -23,6 +23,15 @@ All notable changes to somewm will be documented in this file.
   with theme support via `beautiful.shadow_follow_corners` and per-corner
   `shadow_corner_radius`
 
+- The aerosnap placeholder is now themeable end to end: it can drop a shadow
+  (`beautiful.snap_shadow`, on by default), draw the macOS-style inner hairline
+  (`beautiful.snap_border_inner`, on by default, using the same
+  `wibox_border_inner_*` width/color keys), and round its corners to match the
+  dragged window (`beautiful.snap_follow_corners`, on by default, reusing the
+  same per-corner radii the window's own shadow follows via
+  `shadow_corner_radius`).  With follow-corners off, the preview falls back to
+  the themed `shadow_corner_radius`, mirroring the shadow's own behaviour
+
 - The `roundy` theme now ships a flat solid wallpaper instead of
   `background.png`: `theme.wallpaper_colors` renders as a solid fill (two
   identical stops) using the wibar's `bg_normal`, and the SomeWM "S" logo is

@@ -367,13 +367,10 @@ shadow_free_textures(shadow_nodes_t *shadow)
     }
 }
 
-/**
- * The shadow is pure decoration; it must never intercept clicks. A NULL
+/* The shadow is pure decoration; it must never intercept clicks. A NULL
  * point_accepts_input would make wlr_scene_node_at return it as the hit
- * (swallowing input over the frame and any neighboring window the shadow
- * bleeds onto), so reject explicitly — same pattern as the rounded ring
- * and inner hairline in window.c.
- */
+ * (swallowing input over the frame and any window the shadow bleeds onto),
+ * so reject explicitly, like the rounded ring and inner hairline. */
 static bool
 shadow_point_accepts_input(struct wlr_scene_buffer *buffer, double *sx, double *sy)
 {
@@ -384,8 +381,7 @@ shadow_point_accepts_input(struct wlr_scene_buffer *buffer, double *sx, double *
 }
 
 /**
- * Render a 1x1 solid-color texture for the shadow interior fills.
- * Stretched via wlr_scene_buffer_set_dest_size by shadow_place_fill.
+ * Render a 1x1 solid-color texture for the interior fills.
  * Premultiplied like the gradient slices (a = paint, rgb = color*paint).
  */
 static struct wlr_buffer *
@@ -485,17 +481,15 @@ shadow_create(struct wlr_scene_tree *parent,
         wlr_scene_buffer_set_transform(
             shadow->slice[SHADOW_EDGE_LEFT], WL_OUTPUT_TRANSFORM_180);
 
-    /* The shadow must never take input: wlr_scene_node_at would otherwise
-     * return these buffers/rects as the topmost hit and swallow clicks on
-     * the window underneath (or on a neighbor the shadow bleeds onto). */
+    /* Make every slice input-transparent as well. */
     for (int i = 0; i < SHADOW_SLICE_COUNT; i++)
         if (shadow->slice[i])
             shadow->slice[i]->point_accepts_input = shadow_point_accepts_input;
 
-    /* Solid interior rects (premultiplied color). The side columns only
-     * exist when rounded corners leave gaps beside the middle band.
-     * These are scene buffers (not rects) so they share the input
-     * rejection above; a single 1x1 texture is stretched to size. */
+    /* Solid interior fills (premultiplied color). Scene buffers (not rects)
+     * so they get the input rejection above; a single 1x1 texture is
+     * stretched to size. The side columns only exist when rounded corners
+     * leave gaps beside the middle band. */
     float paint = shadow_paint(config);
     shadow->fill_buf = shadow_render_solid(config->color, paint);
     for (int i = 0; i < SHADOW_FILL_COUNT && shadow->fill_buf; i++) {
@@ -521,7 +515,7 @@ shadow_create(struct wlr_scene_tree *parent,
     return true;
 }
 
-/** Position a gradient slice, disabling it when it has no area. */
+/** Position a scene buffer, disabling it when it has no area. */
 static void
 shadow_place_slice(struct wlr_scene_buffer *slice, int x, int y, int w, int h)
 {
@@ -533,20 +527,6 @@ shadow_place_slice(struct wlr_scene_buffer *slice, int x, int y, int w, int h)
         return;
     wlr_scene_node_set_position(&slice->node, x, y);
     wlr_scene_buffer_set_dest_size(slice, w, h);
-}
-
-/** Position a fill buffer, disabling it when it has no area. */
-static void
-shadow_place_fill(struct wlr_scene_buffer *fill, int x, int y, int w, int h)
-{
-    if (!fill)
-        return;
-    bool on = w > 0 && h > 0;
-    wlr_scene_node_set_enabled(&fill->node, on);
-    if (!on)
-        return;
-    wlr_scene_node_set_position(&fill->node, x, y);
-    wlr_scene_buffer_set_dest_size(fill, w, h);
 }
 
 void
@@ -613,19 +593,19 @@ shadow_update_geometry(shadow_nodes_t *shadow,
     int lx = rtl > rbl ? rtl : rbl;   /* left column width */
     int rx = rtr > rbr ? rtr : rbr;   /* right column width */
 
-    shadow_place_fill(shadow->fill[SHADOW_FILL_MID],
+    shadow_place_slice(shadow->fill[SHADOW_FILL_MID],
         bx + lx, by, sw - lx - rx, sh);
-    shadow_place_fill(shadow->fill[SHADOW_FILL_LEFT],
+    shadow_place_slice(shadow->fill[SHADOW_FILL_LEFT],
         bx, by + rtl, lx, sh - rtl - rbl);
-    shadow_place_fill(shadow->fill[SHADOW_FILL_RIGHT],
+    shadow_place_slice(shadow->fill[SHADOW_FILL_RIGHT],
         bx + sw - rx, by + rtr, rx, sh - rtr - rbr);
-    shadow_place_fill(shadow->fill[SHADOW_FILL_LEFT_TOP],
+    shadow_place_slice(shadow->fill[SHADOW_FILL_LEFT_TOP],
         bx + rtl, by, lx - rtl, rtl);
-    shadow_place_fill(shadow->fill[SHADOW_FILL_LEFT_BOTTOM],
+    shadow_place_slice(shadow->fill[SHADOW_FILL_LEFT_BOTTOM],
         bx + rbl, by + sh - rbl, lx - rbl, rbl);
-    shadow_place_fill(shadow->fill[SHADOW_FILL_RIGHT_TOP],
+    shadow_place_slice(shadow->fill[SHADOW_FILL_RIGHT_TOP],
         bx + sw - rx, by, rx - rtr, rtr);
-    shadow_place_fill(shadow->fill[SHADOW_FILL_RIGHT_BOTTOM],
+    shadow_place_slice(shadow->fill[SHADOW_FILL_RIGHT_BOTTOM],
         bx + sw - rx, by + sh - rbr, rx - rbr, rbr);
 }
 

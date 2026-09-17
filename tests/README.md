@@ -101,6 +101,22 @@ busted spec/gears/math_spec.lua
 bash tests/run-integration.sh tests/test-simple.lua
 ```
 
+### Config and Backend Overrides
+
+Integration tests boot a fresh compositor per test from the minimal
+`tests/rc.lua`. The runner accepts a few overrides:
+
+- `TEST_RC_LUA=somewmrc.lua` — run against a different config, e.g. the stock
+  one. Note the stock config **tiles** the first client on a tag to the full
+  workarea, so drag/move tests must float the client before dragging (see
+  `tests/TESTING.md`).
+- `HEADLESS=1` — headless backend (CI, reliable); `HEADLESS=0` — live Wayland
+  backend, displayed as a nested window on the currently running compositor.
+- `PERSISTENT=1` — keep one compositor alive and reset state between tests
+  (~10x faster).
+- `SOMEWM=./build-test/somewm SOMEWM_CLIENT=./build-test/somewm-client` —
+  point at a specific build tree (defaults to `./build/`).
+
 ### Verbose Mode
 
 ```bash
@@ -184,8 +200,9 @@ Unit tests run with mocked globals defined in `spec/preload.lua`:
 ### Integration Test Environment
 
 Integration tests run in an isolated environment:
-- **Config**: Minimal test config (`tests/rc.lua`)
-- **Backend**: Headless Wayland (`WLR_BACKENDS=headless`)
+- **Config**: Minimal test config (`tests/rc.lua`), overridable with `TEST_RC_LUA`
+- **Backend**: Headless Wayland (`WLR_BACKENDS=headless`) for CI; live nested
+  Wayland window otherwise (`HEADLESS=0` is the default)
 - **Runtime**: Isolated `XDG_RUNTIME_DIR` (won't conflict with running compositor)
 - **IPC**: Communicates via `somewm-client eval`
 

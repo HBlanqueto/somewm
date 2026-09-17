@@ -617,7 +617,6 @@ function awfulwibar.new(args)
         "border_width", "border_color", "font", "opacity", "ontop", "cursor",
         "bgimage", "bg", "fg", "type", "stretch", "shape", "margins", "align",
         "shadow",
-        -- Inner hairline, mirroring the outer border's `wibar_border_*` keys.
         "border_inner_enabled", "border_inner_width", "border_inner_color"
     } do
         if (args[prop] == nil) and beautiful["wibar_"..prop] ~= nil then
