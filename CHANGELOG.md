@@ -42,6 +42,13 @@ All notable changes to somewm will be documented in this file.
   a flat luminance cutoff, and flips per fade step — latched the moment the
   committed colour flips — instead of only on settle
 
+- Fresh Wayland clients no longer map at `(0,0)`, tucked under a top wibar:
+  `screen_update_workarea()` now syncs `Monitor.w` (the workarea the C manage
+  path reads) when a drawin strut changes it, and a fresh XDG toplevel is
+  seeded at its target monitor's workarea origin. Configs without a placement
+  rule (e.g. a minimal `rc.lua`) are affected; the stock `somewmrc.lua` global
+  `no_overlap+no_offscreen` rule already masked it
+
 ## [1.4.5] - 2026-09-01
 
 Patch release. 10 commits since 1.4.4: shadows, config checking, and two build

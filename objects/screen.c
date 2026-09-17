@@ -781,6 +781,12 @@ screen_update_workarea(screen_t *screen)
 
 	area_t old_workarea = screen->workarea;
 	screen->workarea = area;
+	/* Keep the C Monitor workarea in sync. The manage/placement path (and
+	 * applybounds/resize) reads Monitor.w, not screen->workarea; leaving it
+	 * stale at the full screen geometry pins fresh clients under struts such
+	 * as a top wibar (they map at y=0 and tuck under the bar). */
+	if (screen->monitor)
+		screen->monitor->w = area;
 	lua_State *L = globalconf_get_lua_State();
 	luaA_object_push(L, screen);
 	luaA_pusharea(L, old_workarea);

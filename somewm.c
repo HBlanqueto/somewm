@@ -5214,6 +5214,23 @@ mapnotify(struct wl_listener *listener, void *data)
 	LISTEN(&client_surface(c)->events.commit, &c->content_commit, contentcommitnotify);
 
 	client_get_geometry(c, &c->geometry);
+	/* Wayland toplevels carry no inherent position: the XDG surface geometry
+	 * always reports x/y = 0 no matter where the client should appear. Seed
+	 * the initial position at the top-left of the target monitor's usable
+	 * workarea so a fresh client does not map underneath a top strut (e.g. a
+	 * wibar) when the config supplies no placement rule to move it. Lua
+	 * placement rules run later (request::manage) and override this default. */
+	if (c->client_type == XDGShell) {
+		/* Use the same monitor the later target_mon lookup would pick, so the
+		 * default monitor assignment is unchanged. */
+		Monitor *wm = c->mon ? c->mon : xytomon(c->geometry.x, c->geometry.y);
+		if (!wm)
+			wm = selmon;
+		if (wm) {
+			c->geometry.x = wm->w.x;
+			c->geometry.y = wm->w.y;
+		}
+	}
 
 #ifdef XWAYLAND
 	/* Re-manage XWayland clients that were previously unmapped (e.g., Discord
