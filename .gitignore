@@ -33,3 +33,22 @@ docs/*
 
 # Nix build output
 result
+
+# Locally-authored tests & repro helpers (kept out of the repo for now)
+tests/demo-bars-shadows.lua
+tests/demo-roundy-theme.lua
+tests/demo-shadow-corners.lua
+tests/test-csd-move-client.c
+tests/test-csd-move.lua
+tests/test-csd-resize-breakage.lua
+tests/test-fractional-pattern-client.c
+tests/test-fresh-csd-placement.lua
+tests/test-innerline-follow.lua
+tests/test-rounded-corners-fractional.lua
+tests/test-rounded-corners.lua
+tests/test-shadow-rounded-corners.lua
+tests/test-tasklist-csd-teleport.lua
+tests/test-tasklist-minimize.lua
+tests/test-tasklist-tile.lua
+tests/restart/configs/rc-shadow-reload.lua
+tests/restart/repro-shadow-reload.sh
