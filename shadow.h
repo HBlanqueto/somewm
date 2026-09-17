@@ -116,7 +116,8 @@ shadow_config_set_uniform(shadow_config_t *cfg, int radius)
 typedef struct shadow_nodes_t {
     struct wlr_scene_tree *tree;                        /**< Container for shadow slices */
     struct wlr_scene_buffer *slice[SHADOW_SLICE_COUNT]; /**< Gradient scene buffers */
-    struct wlr_scene_rect *fill[SHADOW_FILL_COUNT];     /**< Solid interior rects */
+    struct wlr_scene_buffer *fill[SHADOW_FILL_COUNT];   /**< Solid interior buffers */
+    struct wlr_buffer *fill_buf;                        /**< Shared 1x1 solid fill texture */
     struct wlr_buffer *textures[SHADOW_TEXTURE_COUNT];  /**< Owned gradient textures */
     int last_width;                                     /**< Cached width to skip redundant updates */
     int last_height;                                    /**< Cached height to skip redundant updates */

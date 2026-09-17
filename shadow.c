@@ -361,6 +361,44 @@ shadow_free_textures(shadow_nodes_t *shadow)
             shadow->textures[i] = NULL;
         }
     }
+    if (shadow->fill_buf) {
+        wlr_buffer_drop(shadow->fill_buf);
+        shadow->fill_buf = NULL;
+    }
+}
+
+/**
+ * The shadow is pure decoration; it must never intercept clicks. A NULL
+ * point_accepts_input would make wlr_scene_node_at return it as the hit
+ * (swallowing input over the frame and any neighboring window the shadow
+ * bleeds onto), so reject explicitly — same pattern as the rounded ring
+ * and inner hairline in window.c.
+ */
+static bool
+shadow_point_accepts_input(struct wlr_scene_buffer *buffer, double *sx, double *sy)
+{
+    (void)buffer;
+    (void)sx;
+    (void)sy;
+    return false;
+}
+
+/**
+ * Render a 1x1 solid-color texture for the shadow interior fills.
+ * Stretched via wlr_scene_buffer_set_dest_size by shadow_place_fill.
+ * Premultiplied like the gradient slices (a = paint, rgb = color*paint).
+ */
+static struct wlr_buffer *
+shadow_render_solid(const float color[4], float paint)
+{
+    struct wlr_buffer *wlr_buf = shadow_buffer_create(1, 1);
+    if (!wlr_buf)
+        return NULL;
+
+    struct shadow_buffer *buffer = wl_container_of(wlr_buf, buffer, base);
+    ((uint32_t *)buffer->data)[0] = shadow_pixel(color, paint);
+
+    return wlr_buf;
 }
 
 /**
@@ -447,15 +485,24 @@ shadow_create(struct wlr_scene_tree *parent,
         wlr_scene_buffer_set_transform(
             shadow->slice[SHADOW_EDGE_LEFT], WL_OUTPUT_TRANSFORM_180);
 
+    /* The shadow must never take input: wlr_scene_node_at would otherwise
+     * return these buffers/rects as the topmost hit and swallow clicks on
+     * the window underneath (or on a neighbor the shadow bleeds onto). */
+    for (int i = 0; i < SHADOW_SLICE_COUNT; i++)
+        if (shadow->slice[i])
+            shadow->slice[i]->point_accepts_input = shadow_point_accepts_input;
+
     /* Solid interior rects (premultiplied color). The side columns only
-     * exist when rounded corners leave gaps beside the middle band. */
+     * exist when rounded corners leave gaps beside the middle band.
+     * These are scene buffers (not rects) so they share the input
+     * rejection above; a single 1x1 texture is stretched to size. */
     float paint = shadow_paint(config);
-    float fill_color[4] = {
-        config->color[0] * paint, config->color[1] * paint,
-        config->color[2] * paint, paint,
-    };
-    for (int i = 0; i < SHADOW_FILL_COUNT; i++)
-        shadow->fill[i] = wlr_scene_rect_create(shadow->tree, 0, 0, fill_color);
+    shadow->fill_buf = shadow_render_solid(config->color, paint);
+    for (int i = 0; i < SHADOW_FILL_COUNT && shadow->fill_buf; i++) {
+        shadow->fill[i] = wlr_scene_buffer_create(shadow->tree, shadow->fill_buf);
+        if (shadow->fill[i])
+            shadow->fill[i]->point_accepts_input = shadow_point_accepts_input;
+    }
 
     /* Remember what these textures were rendered for so shadow_update() can
      * tell a pure resize from a config/rounding change. */
@@ -488,9 +535,9 @@ shadow_place_slice(struct wlr_scene_buffer *slice, int x, int y, int w, int h)
     wlr_scene_buffer_set_dest_size(slice, w, h);
 }
 
-/** Position a fill rect, disabling it when it has no area. */
+/** Position a fill buffer, disabling it when it has no area. */
 static void
-shadow_place_fill(struct wlr_scene_rect *fill, int x, int y, int w, int h)
+shadow_place_fill(struct wlr_scene_buffer *fill, int x, int y, int w, int h)
 {
     if (!fill)
         return;
@@ -499,7 +546,7 @@ shadow_place_fill(struct wlr_scene_rect *fill, int x, int y, int w, int h)
     if (!on)
         return;
     wlr_scene_node_set_position(&fill->node, x, y);
-    wlr_scene_rect_set_size(fill, w, h);
+    wlr_scene_buffer_set_dest_size(fill, w, h);
 }
 
 void
