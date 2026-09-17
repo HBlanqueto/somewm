@@ -139,7 +139,13 @@ theme.titlebar_maximized_button_focus_inactive = themes_path .. "roundy/titlebar
 theme.titlebar_maximized_button_normal_active = themes_path .. "roundy/titlebar/maximized_normal_active.png"
 theme.titlebar_maximized_button_focus_active = themes_path .. "roundy/titlebar/maximized_focus_active.png"
 
-theme.wallpaper = themes_path .. "roundy/background.png"
+-- Wallpaper: a flat solid colour matching the wibar (bg_normal), with the
+-- somewm "S" logo drawn on top, recolored to the theme's blue accent.
+-- Setting wallpaper_colors (instead of wallpaper) makes somewmrc.lua's
+-- request::wallpaper handler draw the logo; two identical stops render the
+-- gradient as a solid colour.
+theme.wallpaper_colors = { theme.bg_normal, theme.bg_normal }
+theme.wallpaper_logo_color = "#6d7fd6"
 
 -- You can use your own layout icons like this:
 theme.layout_fairh = themes_path .. "roundy/layouts/fairhw.png"
