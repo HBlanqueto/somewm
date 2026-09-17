@@ -75,6 +75,7 @@ These APIs exist and can be called without error, but have no effect on Wayland.
 | `awful.client.shape.update.all` | No-op | X11 Shape Extension unavailable on Wayland |
 | `awful.client.shape.update.bounding` | No-op | X11 Shape Extension unavailable on Wayland |
 | `awful.client.shape.update.clip` | No-op | X11 Shape Extension unavailable on Wayland |
+| `screen._scan_quiet` | No-op | SomeWM derives `screen._viewports()` live from the wlroots monitor list; there is no separate viewport cache to re-scan |
 
 ### Client Shape (Rounded Corners)
 
@@ -83,6 +84,14 @@ Location: `luaa.c` require() hook, patched at load time
 AwesomeWM uses the X11 Shape Extension (`xcb_shape_mask()`) to apply non-rectangular window shapes (e.g. rounded corners via `gears.shape.rounded_rect`). Wayland has no equivalent protocol-level feature. The `awful.client.shape.update.*` functions are replaced with no-ops via a require() hook so that user configs referencing `client.shape_bounding` or `client.shape_clip` load without error.
 
 See `ideas/Shapes.md` for technical rationale and potential future approaches (shader-based clipping, custom render pass).
+
+### Screen Scan (`screen._scan_quiet`)
+
+Location: `objects/screen.c`
+
+Upstream AwesomeWM calls `screen._scan_quiet()` from `awful.screen.dpi`'s `scanned` handler when that signal fires with no screens and no viewports; it re-runs the RandR/Xinerama scan to repopulate the viewport cache without re-emitting `scanning`/`scanned`, which would recurse into the caller.
+
+SomeWM keeps no separate viewport cache: `screen._viewports()` derives its list directly from the compositor's live monitor list (`mons`), which the wlroots backend already keeps current. `screen._scan_quiet()` is therefore a documented no-op. Emitting `property::_viewports` from it would be wrong as well, since its Lua handler asserts a non-empty list and this path is only ever reached when the list is empty. The handler falls through to its own `create_screen_handler` / `fake_add` fallback, so a `scanned`-with-no-screens race no longer leaves the desktop with 0 screens and 0 tags. It exists only so configs and `dpi.lua` that call it load and run unchanged.
 
 ---
 

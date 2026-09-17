@@ -23,6 +23,13 @@ All notable changes to somewm will be documented in this file.
   with theme support via `beautiful.shadow_follow_corners` and per-corner
   `shadow_corner_radius`
 
+- The `roundy` theme now ships a flat solid wallpaper instead of
+  `background.png`: `theme.wallpaper_colors` renders as a solid fill (two
+  identical stops) using the wibar's `bg_normal`, and the SomeWM "S" logo is
+  drawn on top in the theme's blue accent via `theme.wallpaper_logo_color`.
+  The stock `request::wallpaper` handler already draws the logo (as the
+  Catppuccin theme does); the logo asset is `icons/somewm-logo.svg`
+
 - Optional geometry tracer for diagnosing windows that move unexpectedly:
   setting `SOMEWM_TRACE=1` makes the compositor log every client geometry
   change to stderr as `[TRACE-GEO]` — the app, the old and new rectangle,
@@ -56,6 +63,26 @@ All notable changes to somewm will be documented in this file.
   seeded at its target monitor's workarea origin. Configs without a placement
   rule (e.g. a minimal `rc.lua`) are affected; the stock `somewmrc.lua` global
   `no_overlap+no_offscreen` rule already masked it
+
+- Drop shadows are input-transparent: their slices and interior fills set
+  `point_accepts_input = false` (the interior fills are now scene buffers
+  sharing one 1×1 solid texture, since `wlr_scene_rect` cannot reject input).
+  Clicking near a window edge — under its own or a neighbour's shadow — no
+  longer focuses the wrong window or falls through the layer
+
+- A hot reload no longer double-drops the shadow's shared fill buffer:
+  `clients_detach()` (luaa.c) now NULLs `c->shadow.fill_buf` alongside the
+  nine-patch textures and the crop buffers, so the dying Lua state's GC can
+  never free a `wlr_buffer` the snapshot still owns (the failure mode was
+  `wlr_buffer_drop: Assertion '!buffer->dropped' failed.`)
+
+- A `scanned`-with-no-screens race after a hot reload no longer leaves the
+  desktop with 0 screens and 0 tags. `screen._scan_quiet()` existed upstream
+  but was missing here, so `awful.screen.dpi`'s `scanned` handler aborted
+  mid-scan; it is now a documented no-op (SomeWM derives
+  `screen._viewports()` live from the wlroots monitor list, so there is no
+  separate cache to refresh) and the handler falls through to its own
+  `fake_add` recovery instead
 
 ## [1.4.5] - 2026-09-01
 
