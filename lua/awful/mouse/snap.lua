@@ -47,9 +47,13 @@ local function show_placeholder(geo)
     end
 
     placeholder_w = placeholder_w or wibox {
-        ontop = true,
-        bg    = color(beautiful.snap_bg or beautiful.bg_urgent or "#ff0000"),
+        ontop  = true,
+        bg     = color(beautiful.snap_bg or beautiful.bg_urgent or "#ff0000"),
+        shadow = false,
     }
+
+    -- Re-read the fill color on every show so live theme/accent changes apply.
+    placeholder_w.bg = color(beautiful.snap_bg or beautiful.bg_urgent or "#ff0000")
 
     placeholder_w:geometry(geo)
 
@@ -63,17 +67,25 @@ local function show_placeholder(geo)
     cr:set_operator(cairo.Operator.SOURCE)
     cr:set_source_rgba(1,1,1,1)
 
-    local line_width = beautiful.snap_border_width or 5
-    cr:set_line_width(beautiful.xresources.apply_dpi(line_width))
-
-    local f = beautiful.snap_shape or function()
-        cr:translate(line_width,line_width)
-        shape.rounded_rect(cr,geo.width-2*line_width,geo.height-2*line_width, 10)
+    -- Plain filled square by default: no rounded corners, no border. A theme
+    -- can opt back into the stroked ring by setting snap_border_width > 0, and
+    -- may override the silhouette with snap_shape in either mode.
+    local line_width = beautiful.snap_border_width
+    if line_width and line_width > 0 then
+        cr:set_line_width(beautiful.xresources.apply_dpi(line_width))
+        local f = beautiful.snap_shape or function()
+            cr:translate(line_width,line_width)
+            shape.rounded_rect(cr,geo.width-2*line_width,geo.height-2*line_width, 10)
+        end
+        f(cr, geo.width, geo.height)
+        cr:stroke()
+    else
+        local f = beautiful.snap_shape or function()
+            cr:rectangle(0, 0, geo.width, geo.height)
+        end
+        f(cr, geo.width, geo.height)
+        cr:fill()
     end
-
-    f(cr, geo.width, geo.height)
-
-    cr:stroke()
 
     placeholder_w.shape_bounding = img._native
     placeholder_w._shape_bounding_surface = img  -- Keep reference to prevent GC
