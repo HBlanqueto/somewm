@@ -5066,6 +5066,8 @@ clients_detach(client_snapshot_t **out, int *out_count)
 		/* Don't let GC touch shadow textures - snapshot owns them */
 		for (j = 0; j < SHADOW_TEXTURE_COUNT; j++)
 			c->shadow.textures[j] = NULL;
+		/* Don't let GC drop the shared shadow fill buffer - snapshot owns it */
+		c->shadow.fill_buf = NULL;
 		c->shadow_config = NULL;
 		/* Don't let GC touch rounded corner textures - snapshot owns them */
 		for (j = 0; j < ROUNDED_TEXTURE_COUNT; j++)
