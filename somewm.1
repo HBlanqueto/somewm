@@ -26,6 +26,11 @@ When given the
 option,
 .Nm
 enables full wlroots logging, including debug information.
+Client geometry changes can additionally be traced with
+.Ev SOMEWM_TRACE
+(see the
+.Sx ENVIRONMENT
+section).
 .Pp
 When given the
 .Fl s
@@ -228,6 +233,16 @@ List of directories to search for XCursor themes in.
 .It Ev HOME
 A directory where there are always dear files there for you.
 Waiting for you to clean them up.
+.It Ev SOMEWM_TRACE
+If set to any value, enable the geometry tracer: every client geometry
+change is written to standard error as
+.Dv [TRACE\-GEO]
+with its old and new rectangle, the delta, and the C and Lua stacks that
+produced it, and every pointer press as
+.Dv [TRACE\-BTN]
+(which widget it hit, cursor position, focused surface, mousegrabber
+state).  Unset in normal use; a diagnostic aid for windows that move
+unexpectedly.
 .El
 .Pp
 These are set by

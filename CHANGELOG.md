@@ -23,6 +23,14 @@ All notable changes to somewm will be documented in this file.
   with theme support via `beautiful.shadow_follow_corners` and per-corner
   `shadow_corner_radius`
 
+- Optional geometry tracer for diagnosing windows that move unexpectedly:
+  setting `SOMEWM_TRACE=1` makes the compositor log every client geometry
+  change to stderr as `[TRACE-GEO]` — the app, the old and new rectangle,
+  the delta, and the C backtrace plus Lua call stack that produced it — and
+  mark every pointer press as `[TRACE-BTN]` (which widget it hit, cursor,
+  focused surface, mousegrabber state). Off by default and zero-cost when
+  unset; see `docs/debugging.md`
+
 ### Fixed
 
 - A client with per-corner rounded corners no longer keeps its bottom-left

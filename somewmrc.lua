@@ -1019,6 +1019,10 @@ ruled.client.connect_signal("request::rules", function()
             focus     = awful.client.focus.filter,
             raise     = true,
             screen    = awful.screen.preferred,
+            -- A fresh Wayland (XDG) client is first seeded at its target
+            -- monitor's workarea origin, so it never maps under a strut (e.g.
+            -- a top wibar); this rule then nudges it to avoid overlapping
+            -- other clients and running off-screen.
             placement = awful.placement.no_overlap+awful.placement.no_offscreen
         }
     }
@@ -1058,7 +1062,11 @@ ruled.client.connect_signal("request::rules", function()
     --[[ ── Per-app decoration rules (commented examples) ──────────────
      *
      * CSD apps: GTK3/GTK4/libadwaita apps that draw their own headerbar.
-     * Set decorations = "client" to let them do their own CSD.
+     * Set decorations = "client" to let them do their own CSD.  Dragging and
+     * resizing the app's own headerbar is wired automatically: the compositor
+     * forwards the headerbar's request_move / request_resize to the same Lua
+     * mousegrabber path used by SomeWM titlebars, so no rule is needed beyond
+     * decorations = "client".
      *
      * ruled.client.append_rule {
      *     id         = "csd_gtk4",
@@ -1150,3 +1158,20 @@ end)
 client.connect_signal("mouse::enter", function(c)
     c:activate { context = "mouse_enter", raise = false }
 end)
+
+-- Debugging
+-- Window ending up somewhere you didn't ask for?  Start somewm with the
+-- geometry tracer and watch stderr:
+--
+--     SOMEWM_TRACE=1 somewm
+--
+-- Every client geometry change is printed as
+--     [TRACE-GEO] <app> <old> -> <new> (dx= dy= dw= dh=) silent=<0|1>
+-- followed by the C backtrace and the Lua call stack that produced it, so you
+-- can tell whether the move came from a rule, a layout, Lua, or C.  Each
+-- pointer press is marked with
+--     [TRACE-BTN] <who> cursor=(x,y) btn=N state=N client=<app> ...
+-- so a geometry write can be tied to the click that triggered it.  C frames
+-- print as `c#N somewm(+0x...)`; resolve an offset with
+--     addr2line -f -C -e /path/to/somewm 0x...
+-- The tracer is off unless SOMEWM_TRACE is set.  See docs/debugging.md.

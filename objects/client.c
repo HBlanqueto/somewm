@@ -121,7 +121,12 @@ bool client_crop_outer_radii(client_t *c, int radii[4]);
 
 #include <math.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+#include <time.h>
+#if defined(__linux__)
+#include <execinfo.h>
+#endif
 #include <wayland-server-core.h>
 #include <wlr/types/wlr_foreign_toplevel_management_v1.h>
 #include <wlr/types/wlr_scene.h>
@@ -2685,6 +2690,82 @@ client_apply_size_hints(client_t *c, area_t geometry)
     return geometry;
 }
 
+/* Debug-only geometry write tracer (enable with SOMEWM_TRACE=1).
+ *
+ * Every client geometry change is logged with its delta and the C/Lua call
+ * stacks that produced it. This is how we find which code path relocates a
+ * window, e.g. a CSD client that "teleports" when its tasklist entry is
+ * clicked. Kept behind the env var so it costs nothing in normal runs. */
+static long
+trace_now_ms(void)
+{
+    struct timespec ts;
+
+    if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0)
+        return 0;
+    return (long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+}
+
+static void
+trace_geometry_write(client_t *c, area_t old_geo, area_t new_geo, bool silent)
+{
+    static long t0 = -1;
+    static int enabled = -1;
+    const char *appid;
+
+    if (enabled < 0) {
+        enabled = getenv("SOMEWM_TRACE") != NULL;
+        if (enabled)
+            t0 = trace_now_ms();
+    }
+    if (!enabled)
+        return;
+
+    appid = some_client_get_appid(c);
+    if (!appid)
+        appid = "?";
+
+    fprintf(stderr,
+        "[TRACE-GEO] +%ldms %s %dx%d+%d+%d -> %dx%d+%d+%d "
+        "(dx=%d dy=%d dw=%d dh=%d) silent=%d\n",
+        trace_now_ms() - t0,
+        appid,
+        old_geo.width, old_geo.height, old_geo.x, old_geo.y,
+        new_geo.width, new_geo.height, new_geo.x, new_geo.y,
+        new_geo.x - old_geo.x, new_geo.y - old_geo.y,
+        new_geo.width - old_geo.width, new_geo.height - old_geo.height,
+        (int)silent);
+
+#if defined(__linux__)
+    {
+        void *frames[32];
+        int n = backtrace(frames, 32);
+        char **syms = n > 0 ? backtrace_symbols(frames, n) : NULL;
+        int i;
+
+        fprintf(stderr, "[TRACE-GEO]   C frames (resolve with: "
+            "addr2line -f -C -e <somewm-binary> <offset>):\n");
+        for (i = 1; i < n; i++)
+            fprintf(stderr, "[TRACE-GEO]   c#%d %s\n", i, syms ? syms[i] : "?");
+        free(syms);
+    }
+#endif
+
+    {
+        lua_State *L = globalconf_get_lua_State();
+        lua_Debug ar;
+        int level;
+
+        for (level = 1; L && level < 16 && lua_getstack(L, level, &ar); level++) {
+            lua_getinfo(L, "Sln", &ar);
+            fprintf(stderr, "[TRACE-GEO]   lua#%d %s:%s:%d\n",
+                level, ar.short_src, ar.name ? ar.name : "?", ar.currentline);
+        }
+    }
+
+    fflush(stderr);
+}
+
 static void
 client_resize_do(client_t *c, area_t geometry, bool silent)
 {
@@ -2697,6 +2778,8 @@ client_resize_do(client_t *c, area_t geometry, bool silent)
 
     /* Also store geometry including border */
     old_geometry = c->geometry;
+    if (!AREA_EQUAL(old_geometry, geometry))
+        trace_geometry_write(c, old_geometry, geometry, silent);
     c->geometry = geometry;
 
     /* For XWayland clients, sync position to X11 immediately (not deferred to

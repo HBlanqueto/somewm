@@ -1059,7 +1059,9 @@ buttonpress(struct wl_listener *listener, void *data)
 	struct wlr_pointer_button_event *event = data;
 	struct wlr_keyboard *keyboard;
 	uint32_t mods;
-	Client *c;
+	Client *c = NULL;
+	LayerSurface *l = NULL;
+	drawin_t *drawin = NULL;
 
 	wlr_idle_notifier_v1_notify_activity(idle_notifier, seat);
 	some_notify_activity();
@@ -1105,8 +1107,6 @@ buttonpress(struct wl_listener *listener, void *data)
 	switch (event->state) {
 	case WL_POINTER_BUTTON_STATE_PRESSED: {
 		Monitor *mon;
-		LayerSurface *l = NULL;
-		drawin_t *drawin = NULL;
 		drawable_t *titlebar_drawable = NULL;
 		int rel_x, rel_y;
 
@@ -1210,7 +1210,6 @@ buttonpress(struct wl_listener *listener, void *data)
 		break;
 	}
 	case WL_POINTER_BUTTON_STATE_RELEASED: {
-		drawin_t *drawin = NULL;
 		drawable_t *titlebar_drawable = NULL;
 
 		/* NOTE: C-level move/resize exit handling removed - Lua mousegrabber handles this now */
@@ -1263,6 +1262,21 @@ buttonpress(struct wl_listener *listener, void *data)
 		}
 		break;
 	}
+	}
+
+	/* Debug-only button marker (SOMEWM_TRACE=1): shows where a click landed,
+	 * so geometry writes logged by trace_geometry_write() can be correlated
+	 * with the press that triggered them. */
+	if (getenv("SOMEWM_TRACE")
+			&& event->state == WL_POINTER_BUTTON_STATE_PRESSED) {
+		const char *who = drawin ? "drawin" : (c ? "client" : (l ? "layer" : "root"));
+		fprintf(stderr, "[TRACE-BTN] %s cursor=(%d,%d) btn=%u state=%u client=%s "
+			"focused_surface=%p mousegrabber=%d\n",
+			who, (int)cursor->x, (int)cursor->y, event->button, event->state,
+			c ? client_get_appid(c) : "nil",
+			(void*)seat->pointer_state.focused_surface,
+			(int)mousegrabber_isrunning());
+		fflush(stderr);
 	}
 
 	/* Don't forward button event to client if mousegrabber started during

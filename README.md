@@ -74,6 +74,10 @@ Full documentation at **[somewm.org](https://somewm.org)**:
 - [Tutorials](https://somewm.org/docs/tutorials/basics) - Keybindings, widgets, themes
 - [Troubleshooting](https://somewm.org/docs/troubleshooting) - Common issues and solutions
 
+In this repository:
+
+- [Debugging](docs/debugging.md) - `SOMEWM_TRACE` geometry/button tracer
+
 ## Contributing
 
 Contributions welcome! Please read the [Contributing Guide](CONTRIBUTING.md) first.

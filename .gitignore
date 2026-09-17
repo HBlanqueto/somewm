@@ -27,6 +27,7 @@ tools/
 reports/
 docs/*
 !docs/howtonix.md
+!docs/debugging.md
 .cache/
 .local.mk
 
