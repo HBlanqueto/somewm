@@ -382,6 +382,37 @@ Changed in 1.4.3: `clip_directional` no longer has an effect. The shadow
 is drawn at its offset and fades out on every side; sides fully covered
 by the window are simply not visible. Configs that set it still parse.
 
+### Inner Hairline (macOS-style inner border)
+
+A thin RGBA line drawn by the compositor just inside the window edge, on top
+of the content and inside the (optional) outer border. No AwesomeWM
+equivalent. For clients it traces the whole decorated frame (surfaces plus
+attached titlebars) as one contour; for drawins/wiboxes it hugs the content
+edge. It is pure decoration: input-transparent, and it changes no geometry.
+
+Theme variables (shared width/color, separate toggles):
+
+| Variable | Meaning |
+|----------|---------|
+| `beautiful.border_inner_enabled` | Enable for clients |
+| `beautiful.border_inner_drawin_enabled` | Global fallback for every drawin/wibox at creation |
+| `beautiful.border_inner_width` | Line width; `0` disables the hairline |
+| `beautiful.border_inner_color` | `#RRGGBBAA` (alpha used as-is, no focus dimming) |
+
+Per-surface overrides, mirroring the outer border's `wibar_border_*` keys:
+
+| Variable | Surface |
+|----------|---------|
+| `beautiful.wibar_border_inner_{enabled,width,color}` | `awful.wibar` only |
+| `beautiful.wibox_border_inner_{enabled,width,color}` | any plain `wibox` |
+
+A wibox resolves the hairline as: explicit `wibox{border_inner_*}` args →
+`wibar_border_inner_*` (wibars) → `wibox_border_inner_*` → the global
+`border_inner_drawin_enabled` fallback. Per-object `set_border_inner_*` and
+client rules still work; the Lua side keeps a `_user_*` flag so a default
+keeps tracking the theme until something overrides it. In `somewm.c` the
+compiled defaults are width `1`, `rgba(255,255,255,0.10)`, both toggles off.
+
 ### Edge Snap Dwell
 
 `awful.mouse.snap.snap_dwell_ms` (default 150) delays the edge-snap placeholder until the cursor has dwelled in the same edge zone for that many milliseconds, preventing accidental snaps during fast drags. Set to 0 for AwesomeWM's immediate behavior.
