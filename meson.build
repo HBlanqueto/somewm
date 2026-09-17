@@ -628,14 +628,19 @@ test_content_pattern_client = executable(
 
 # Test XDG client that commits an over-scaled buffer presented via viewport
 # (fractional-scale layout); verifies rounded-corner crops against the
-# displayed box rather than buffer/scale.
-test_fractional_pattern_client = executable(
-  'test-fractional-pattern-client',
-  ['tests/test-fractional-pattern-client.c', xdg_shell_client_code, viewporter_client_code],
-  [xdg_shell_client_header, viewporter_client_header],
-  dependencies: [wayland_client],
-  install: false,
-)
+# displayed box rather than buffer/scale. The source is a local-only test
+# helper (kept out of the repo for now): build it when present, skip it on a
+# clean checkout that does not carry it.
+fs = import('fs')
+if fs.exists('tests/test-fractional-pattern-client.c')
+  test_fractional_pattern_client = executable(
+    'test-fractional-pattern-client',
+    ['tests/test-fractional-pattern-client.c', xdg_shell_client_code, viewporter_client_code],
+    [xdg_shell_client_header, viewporter_client_header],
+    dependencies: [wayland_client],
+    install: false,
+  )
+endif
 
 # Test XDG toplevel client that logs decoded wl_pointer events to a marker file.
 # Used by test-titlebar-pointer-leak.lua to assert no pointer events leak to the
