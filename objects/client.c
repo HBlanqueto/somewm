@@ -2692,8 +2692,8 @@ client_apply_size_hints(client_t *c, area_t geometry)
  *
  * Every client geometry change is logged with its delta and the C/Lua call
  * stacks that produced it. This is how we find which code path relocates a
- * window, e.g. a CSD client that "teleports" when its tasklist entry is
- * clicked. Kept behind the env var so it costs nothing in normal runs. */
+ * window that "teleports" when its tasklist entry is clicked. Kept behind
+ * the env var so it costs nothing in normal runs. */
 static long
 trace_now_ms(void)
 {

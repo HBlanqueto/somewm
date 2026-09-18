@@ -37,7 +37,7 @@ TEST_RC_LUA=somewmrc.lua ./tests/run-integration.sh tests/test-*.lua
 Beware: tiling layouts apply to tests too. Any test that drags a window
 (headerbar/titlebar move, resize) must **float the client first**, because a
 tiling config sizes a lone client to the full tag, and a tiled or maximized
-client ignores `request_move`/`request_resize`:
+client cannot be moved or resized interactively:
 
 ```lua
 c.floating = true

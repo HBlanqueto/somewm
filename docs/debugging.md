@@ -76,13 +76,8 @@ The `[TRACE-BTN]` line for your click is immediately followed by any
 
 ## Window-interaction notes
 
-Two behaviours are worth knowing before you blame a rule:
+One behaviour is worth knowing before you blame a rule:
 
-- **CSD move/resize.** GTK/libadwaita clients with `decorations = "client"`
-  send `request_move` / `request_resize` when their own headerbar is dragged.
-  SomeWM forwards these to the same Lua mousegrabber used by its composite
-  titlebars, so no configuration is needed. The resulting geometry writes come
-  from `awful.mouse.client.move` / `resize` and are normal.
 - **Fresh-client placement.** A newly mapped Wayland (XDG) toplevel is first
   seeded at its target monitor's workarea origin (so it never maps under a
   strut such as a top wibar), then the global `placement` rule in
