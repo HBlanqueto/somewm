@@ -20,10 +20,7 @@ the widgets and the render/foreground wiring.
     by altering the sampled color.
   * Anti-flicker: a candidate is committed only after `debounce` consecutive
     agreeing samples and only when it differs from the committed color by more
-    than `autocolor_threshold` CIELAB deltaE. No sampling happens mid-fade.
-  * Fade: `awesome.start_animation(fade, ease-out-cubic)` lerps RGB between the
-    committed colors; steps lerp continuously across the full 256-level hex
-    range, so consumer asset rebuilds only re-run on a committed change.
+    than `autocolor_threshold` CIELAB deltaE.
   * Readability: `M.foreground()` picks a light/dark color from WCAG-style
     linear luminance; the caller forwards it to its own text/widgets through
     the `fg_cb` callback.
@@ -34,8 +31,8 @@ the widgets and the render/foreground wiring.
     histogram (`min_share`), the bound fallback is kept.
 
 Config chain (rule -> theme -> fallback), per-client read via `custom_ac_*`:
-  client.custom_ac_mode / custom_ac_interval / custom_ac_fade /
-  custom_ac_threshold / custom_ac_debounce / custom_ac_region /
+  client.custom_ac_mode / custom_ac_interval / custom_ac_threshold /
+  custom_ac_debounce / custom_ac_region /
   custom_ac_thumb / custom_ac_min_share / custom_ac_alpha /
   custom_ac_focus_outline ...
   beautiful.autocolor_* theme equivalents; legacy
@@ -45,7 +42,7 @@ Config chain (rule -> theme -> fallback), per-client read via `custom_ac_*`:
 Default mode is "off"; enable per client.
 
 Sampling cost: one `c.content` readback per poll on the main thread, bounded per
-client and gated by `autocolor_interval`; never during a fade. The compositor
+client and gated by `autocolor_interval`. The compositor
 readback path handles both SHM (zero-copy) and DMA-BUF/GPU (Firefox).
 ]]
 
@@ -95,7 +92,6 @@ local function cfg(c)
     return {
         mode         = M.mode(c),
         interval     = tonumber(opt(c, "interval", "autocolor_interval", 1)) or 1,
-        fade         = tonumber(opt(c, "fade", "autocolor_fade", 0.35)) or 0.35,
         threshold    = tonumber(opt(c, "threshold", "autocolor_threshold", 18)) or 18,
         debounce     = math.max(1, math.floor(tonumber(opt(c, "debounce", "autocolor_debounce", 2)) or 2)),
         region       = opt(c, "region", "autocolor_region", "top") == "top" and "top" or "full",
@@ -145,17 +141,6 @@ local function delta_e(a, b)
     if not A or not B then return 0 end
     local dl, da, db = A.l - B.l, A.a - B.a, A.b - B.b
     return math.sqrt(dl * dl + da * da + db * db)
-end
-
-local function lerp_hex(a, b, t)
-    local ar, ag, ab = rgb(a)
-    local br, bg, bb = rgb(b)
-    if not ar or not br then return b end
-    -- Intermediate steps lerp continuously across the full 256-level hex range
-    -- (8 bits per channel); the FIFO cache only sees committed color changes.
-    local function ic(v) return math.max(0, math.min(255, math.floor(v + 0.5))) end
-    return ("#%02x%02x%02x"):format(
-        ic(ar + (br - ar) * t), ic(ag + (bg - ag) * t), ic(ab + (bb - ab) * t))
 end
 
 -- Blend `hex` toward `base` by `t` (t=1 -> hex unchanged, t=0 -> base).
@@ -334,18 +319,17 @@ local function sample(c, _st)
 end
 
 -- ---------------------------------------------------------------------------
--- Commit pipeline (instant commit -> fade)
+-- Commit pipeline (instant commit)
 -- ---------------------------------------------------------------------------
-
--- Forward declarations: `commit` runs before `fade` is defined; `fade`'s
--- completion handler calls `schedule`, also defined later in this chunk.
-local fade, schedule
 
 local function commit(c, st, hex)
     if not c.valid then return end
     st.color = hex
     st.pending = nil
-    fade(c, st, st.shown or st.fallback, hex)
+    if st.render then
+        st.render(hex)
+        if st.fg_cb then st.fg_cb(M.foreground(hex)) end
+    end
 end
 
 local function on_sample(c, st, hex, share)
@@ -358,8 +342,8 @@ local function on_sample(c, st, hex, share)
 
     -- live: the committed color follows the sampled dominant IMMEDIATELY.
     -- The deltaE threshold is the only anti-flicker guard: near-equal colors
-    -- are ignored and the fade smooths the step, so a stable bar never
-    -- jitters, but a real content-color change lands on the next commit.
+    -- are ignored, so a stable bar never jitters; a real content-color change
+    -- lands on the next commit.
     if not st.color then
         commit(c, st, hex)
         return
@@ -368,47 +352,6 @@ local function on_sample(c, st, hex, share)
         return
     end
     commit(c, st, hex)
-end
-
-fade = function(c, st, from, to)
-    local rd = st.render
-    if not rd then return end
-    if st.handle then pcall(function() st.handle:cancel() end); st.handle = nil end
-
-    -- Foreground latch starts at the settled foreground so mid-fade we only
-    -- emit on an actual flip (titlebar text flips exactly when it should).
-    local fg_latch = M.foreground(from or to)
-
-    local function settle()
-        st.shown, st.color = to, to
-        rd(to)
-        if st.fg_cb then st.fg_cb(M.foreground(to)) end
-    end
-
-    local dur = st.cfg.fade
-    if not from or from == to or dur <= 0 then settle(); return end
-
-    st.handle = awesome.start_animation(dur, "ease-out-cubic",
-        function(t)
-            local h = lerp_hex(from, to, t)
-            st.shown = h
-            rd(h)
-            -- Emit the caller's foreground on every step where the preferred
-            -- candidate flips, not only on settle: title text stays readable
-            -- while the bar itself is still mid-fade.
-            local fg = M.foreground(h)
-            if st.fg_cb and fg ~= fg_latch then
-                fg_latch = fg
-                st.fg_cb(fg)
-            end
-        end,
-        function()
-            st.handle = nil
-            if not c.valid then return end
-            settle()
-            -- Content changed while the fade was running: sample once more.
-            if st.mode == "live" and st.dirty then schedule(c, st) end
-        end)
 end
 
 -- ---------------------------------------------------------------------------
@@ -448,12 +391,10 @@ local function poll(c, st)
 end
 
 -- Request one extraction soon. Coalesced: while scheduled, additional commits
--- only set the dirty latch. Binds the forward-declared upvalue from the
--- commit-pipeline section (fade's completion handler also calls it).
-schedule = function(c, st)
+-- only set the dirty latch.
+local schedule = function(c, st)
     if not c.valid then return end
     if st.scheduled then return end
-    if st.handle then st.dirty = true; return end -- mid-fade: wait
     if not gate_ok(st) then st.dirty = true; return end
     st.scheduled = true
     gears.timer.delayed_call(function()
@@ -509,7 +450,6 @@ local function ensure_sampling(c, st)
     local t = gears.timer { timeout = st.cfg.interval }
     t:connect_signal("timeout", function()
         if not c.valid then t:stop(); return end
-        if st.handle then return end          -- never poll mid-fade
         if st.dirty and not gate_ok(st) then return end
         poll(c, st)
     end)
@@ -527,11 +467,11 @@ function M._ensure(c)
     if not st then
         st = {
             mode = M.mode(c), cfg = cfg(c),
-            handle = nil, live_t = nil, sig = nil,
+            live_t = nil, sig = nil,
             started = false, scheduled = false,
             commit_seen = false,
             dirty = false, last_attempt = nil,
-            color = nil, shown = nil,
+            color = nil,
         }
         STATE[c] = st
     end
@@ -539,17 +479,19 @@ function M._ensure(c)
 end
 
 -- Bind a renderer for this client. `render(color)` is called at each committed
--- color (and fade step); `fg_cb(hex)` on settle with the readable foreground
--- (`M.foreground`, typically driving the caller's text/glyphs).
+-- color; `fg_cb(hex)` with the readable foreground (`M.foreground`, typically
+-- driving the caller's text/glyphs).
 -- Returns the current committed color or the fallback.
 function M.bind(c, fallback, render, fg_cb)
     if not M.is_active(c) then return fallback end
     local st = M._ensure(c)
     st.render = render
     st.fg_cb = fg_cb
-    st.fallback = fallback or "#222222"
     ensure_sampling(c, st)
-    if st.color then fade(c, st, st.shown or st.color, st.color) end
+    if st.color then
+        st.render(st.color)
+        if st.fg_cb then st.fg_cb(M.foreground(st.color)) end
+    end
     return st.color or fallback
 end
 
@@ -561,7 +503,6 @@ end
 local function on_unmanage(c)
     local st = STATE[c]
     if st then
-        if st.handle then pcall(function() st.handle:cancel() end) end
         if st.live_t then st.live_t:stop() end
         disconnect_surface(c, st)
         STATE[c] = nil

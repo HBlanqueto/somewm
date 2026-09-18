@@ -53,8 +53,7 @@ All notable changes to somewm will be documented in this file.
   a bright glyph can't smear into the dominant-colour tally, and stays on the
   dependency-free temp-PNG readback (`write_to_png` + `new_from_file`)
 - The titlebar foreground now uses WCAG relative-luminance contrast instead of
-  a flat luminance cutoff, and flips per fade step — latched the moment the
-  committed colour flips — instead of only on settle
+  a flat luminance cutoff, and flips immediately with the committed colour
 
 - Fresh Wayland clients no longer map at `(0,0)`, tucked under a top wibar:
   `screen_update_workarea()` now syncs `Monitor.w` (the workarea the C manage
@@ -82,6 +81,11 @@ All notable changes to somewm will be documented in this file.
   `screen._viewports()` live from the wlroots monitor list, so there is no
   separate cache to refresh) and the handler falls through to its own
   `fake_add` recovery instead
+
+### Removed
+
+- The autocolor fade animation: colors are committed instantly
+  (`beautiful.autocolor_fade` / `custom_ac_fade` are no longer read)
 
 ## [1.4.5] - 2026-09-01
 
