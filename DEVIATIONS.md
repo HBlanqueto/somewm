@@ -170,7 +170,7 @@ These affect XWayland (X11) clients only. Native Wayland clients are not affecte
 
 | Feature | Status | Impact |
 |---------|--------|--------|
-| `_NET_FRAME_EXTENTS` | Not sent | Some XWayland apps misposition windows; native Wayland CSD apps are unaffected (handled by xdg-decoration protocol) |
+| `_NET_FRAME_EXTENTS` | Not sent | CSD-aware XWayland apps may misposition windows |
 | `_NET_DESKTOP_GEOMETRY` | Hardcoded 1920x1080 | XWayland pagers/tools see wrong geometry on non-1080p monitors |
 | `_NET_WM_DESKTOP` | Read but not applied | XWayland apps setting desktop before mapping land on wrong tag |
 | Maximized combo | No h-max + v-max merging | XWayland apps requesting both get two state changes instead of one clean maximize |

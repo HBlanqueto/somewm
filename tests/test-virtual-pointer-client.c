@@ -7,18 +7,14 @@
  * full buttonpress()/axisnotify() path: mousegrabber routing, client button
  * bindings, and seat notification.
  *
- * Usage: test-virtual-pointer-client <move|click|drag|scroll> <x> <y>
+ * Usage: test-virtual-pointer-client <move|click|scroll> <x> <y>
  *                                     <x_extent> <y_extent>
  *                                     [left|middle|right|side|extra|up|down]
- *                                     [<dx> <dy>]
  *
  * x/y are layout coordinates; x_extent/y_extent the layout size (normally the
  * screen geometry). "move" only positions the cursor; "click" also presses and
- * releases the given button (left by default); "drag" presses at x/y, holds,
- * sweeps +dx,+dy across several motion frames, then releases (used for CSD
- * move/resize which require the button to be held while motion arrives);
- * "scroll" sends one discrete vertical wheel tick (down by default). Exits
- * after the events are flushed.
+ * releases the given button (left by default); "scroll" sends one discrete
+ * vertical wheel tick (down by default). Exits after the events are flushed.
  */
 
 #include <linux/input-event-codes.h>
@@ -73,20 +69,18 @@ static uint32_t button_code(const char *name) {
 }
 
 int main(int argc, char *argv[]) {
-    if ((argc < 6 || argc > 9)
+    if ((argc != 6 && argc != 7)
             || (strcmp(argv[1], "move") != 0 && strcmp(argv[1], "click") != 0
-                && strcmp(argv[1], "drag") != 0
                 && strcmp(argv[1], "scroll") != 0)) {
-        fprintf(stderr, "Usage: %s <move|click|drag|scroll> <x> <y> <x_extent> "
-                "<y_extent> [left|middle|right|side|extra|up|down] [<dx> <dy>]\n", argv[0]);
+        fprintf(stderr, "Usage: %s <move|click|scroll> <x> <y> <x_extent> "
+                "<y_extent> [left|middle|right|side|extra|up|down]\n", argv[0]);
         return 1;
     }
     int click = strcmp(argv[1], "click") == 0;
-    int drag = strcmp(argv[1], "drag") == 0;
     int scroll = strcmp(argv[1], "scroll") == 0;
     uint32_t btn = BTN_LEFT;
     int32_t scroll_dir = 1; /* wl_pointer convention: positive = down */
-    if (argc >= 7) {
+    if (argc == 7) {
         if (scroll) {
             if (strcmp(argv[6], "up") == 0) {
                 scroll_dir = -1;
@@ -108,8 +102,6 @@ int main(int argc, char *argv[]) {
     uint32_t y = (uint32_t)strtoul(argv[3], NULL, 10);
     uint32_t x_extent = (uint32_t)strtoul(argv[4], NULL, 10);
     uint32_t y_extent = (uint32_t)strtoul(argv[5], NULL, 10);
-    int dx = argc >= 8 ? (int)strtol(argv[7], NULL, 10) : 0;
-    int dy = argc >= 9 ? (int)strtol(argv[8], NULL, 10) : 0;
 
     struct wl_display *display = wl_display_connect(NULL);
     if (!display) {
@@ -147,30 +139,6 @@ int main(int argc, char *argv[]) {
         zwlr_virtual_pointer_v1_frame(pointer);
         wl_display_roundtrip(display);
         sleep_ms(50);
-        zwlr_virtual_pointer_v1_button(pointer, now_ms(), btn,
-                                       WL_POINTER_BUTTON_STATE_RELEASED);
-        zwlr_virtual_pointer_v1_frame(pointer);
-        wl_display_roundtrip(display);
-    } else if (drag) {
-        sleep_ms(50);
-        /* Press, hold, sweep in several steps, release. This is what CSD
-         * move/resize need: the button must stay held while motion arrives
-         * so the compositor's mousegrabber keeps running. */
-        zwlr_virtual_pointer_v1_motion_absolute(pointer, now_ms(), x, y,
-                                                x_extent, y_extent);
-        zwlr_virtual_pointer_v1_button(pointer, now_ms(), btn,
-                                       WL_POINTER_BUTTON_STATE_PRESSED);
-        zwlr_virtual_pointer_v1_frame(pointer);
-        wl_display_roundtrip(display);
-        sleep_ms(60);
-        for (int i = 1; i <= 6; i++) {
-            zwlr_virtual_pointer_v1_motion_absolute(pointer, now_ms(),
-                x + (uint32_t)(dx * i / 6), y + (uint32_t)(dy * i / 6),
-                x_extent, y_extent);
-            zwlr_virtual_pointer_v1_frame(pointer);
-            wl_display_roundtrip(display);
-            sleep_ms(30);
-        }
         zwlr_virtual_pointer_v1_button(pointer, now_ms(), btn,
                                        WL_POINTER_BUTTON_STATE_RELEASED);
         zwlr_virtual_pointer_v1_frame(pointer);

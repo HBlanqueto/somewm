@@ -391,8 +391,7 @@ module.delayed_properties = {}
 local force_ignore = {
     titlebars_enabled=true, focus=true, screen=true, x=true,
     y=true, width=true, height=true, geometry=true,placement=true,
-    border_width=true,floating=true,size_hints_honor=true,
-    decorations=true
+    border_width=true,floating=true,size_hints_honor=true
 }
 
 function module.high_priority_properties.tag(c, value, props)
@@ -546,13 +545,6 @@ crules._execute = function(_, c, props, callbacks)
     if props.border_width then
         c.border_width = type(props.border_width) == "function" and
             props.border_width(c, props) or props.border_width
-    end
-
-    -- Set decoration mode (CSD vs SSD) before titlebars_enabled runs,
-    -- because the rc.lua titlebars handler reads c.decorations to decide
-    -- whether to draw composite titlebars.
-    if props.decorations ~= nil then
-        c.decorations = props.decorations
     end
 
     -- This has to be done first, as it will impact geometry related props.
