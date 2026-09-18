@@ -40,6 +40,8 @@ Config chain (rule -> theme -> fallback), per-client read via `custom_ac_*`:
   custom_ac_focus_outline ...
   beautiful.autocolor_* theme equivalents; legacy
   client.custom_tb_auto_color=true maps to "live" ("off" otherwise).
+  beautiful.autocolor_white_fg (theme-only) overrides the RGB of the light
+  "white" fg that `M.foreground()` derives (default #f2f2f2).
 Default mode is "off"; enable per client.
 
 Sampling cost: one `c.content` readback per poll on the main thread, bounded per
@@ -169,11 +171,30 @@ end
 -- Foreground picked for contrast; caller decides what it drives.
 local LUM_THRESHOLD = 0.45
 
+-- RGB override for the light ("white") fg, from beautiful.autocolor_white_fg.
+-- Accepts hex (#RGB/#RRGGBB) or rgb()/rgba(); only the RGB is used (alpha, if
+-- any, is dropped — the caller's focus/unfocus alphas decide translucency).
+-- Returns nil when unset or unparseable, so the caller falls back to #f2f2f2.
+local function white_fg()
+    local v = beautiful.autocolor_white_fg
+    if type(v) ~= "string" then return nil end
+    if v:sub(1, 1) == "#" then
+        local r, g, b = rgb(v)
+        if not r then return nil end
+        return ("#%02x%02x%02x"):format(r, g, b)
+    end
+    local r, g, b = gears.color.parse_color(v)
+    if not r then return nil end
+    local function cl(x) return math.max(0, math.min(255, math.floor(x * 255 + 0.5))) end
+    return ("#%02x%02x%02x"):format(cl(r), cl(g), cl(b))
+end
+
 function M.foreground(hex)
     local r, g, b = rgb(hex)
     if not r then return "#f2f2f2" end
     local lum = 0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b)
-    return lum >= LUM_THRESHOLD and "#181818" or "#f2f2f2"
+    if lum >= LUM_THRESHOLD then return "#181818" end
+    return white_fg() or "#f2f2f2"
 end
 
 -- Focus outline derived from the sampled color's luminance so it stays visible

@@ -7,6 +7,9 @@ require "lgi"
 _G.awesome = {
    version = "v9999",
    api_level = 9999,
+   -- gears.timer wires refresh/exit at load time; autocolor specs pull gears in.
+   connect_signal = function() end,
+   start_animation = function() end,
 }
 
 -- "fix" some intentional beautiful breakage done by .travis.yml
