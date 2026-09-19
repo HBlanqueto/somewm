@@ -129,7 +129,7 @@ bool client_crop_outer_radii(client_t *c, int radii[4]);
 #endif
 #include <wayland-server-core.h>
 #include <wlr/types/wlr_foreign_toplevel_management_v1.h>
-#include <wlr/types/wlr_scene.h>
+#include "scenefx_compat.h"
 #include <wlr/types/wlr_xdg_shell.h>
 #include <wlr/render/wlr_renderer.h>
 #include <wlr/render/wlr_texture.h>
@@ -2169,6 +2169,10 @@ client_border_refresh(void)
             /* Apply color to all 4 border rectangles */
             for(i = 0; i < 4; i++)
                 wlr_scene_rect_set_color(c->border[i], color_floats);
+#ifdef HAVE_SCENEFX
+            if (c->border_frame)
+                wlr_scene_rect_set_color(c->border_frame, color_floats);
+#endif
         }
     }
 }

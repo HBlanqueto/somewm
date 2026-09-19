@@ -24,7 +24,7 @@
 #include <lua.h>
 #include <stdbool.h>
 #include <stdint.h>
-#include <wlr/types/wlr_scene.h>
+#include "scenefx_compat.h"
 #include <wlr/types/wlr_buffer.h>
 
 /** Number of owned corner textures (TL, TR, BL, BR). */

@@ -17,7 +17,7 @@
 #include <limits.h>
 #include <cairo.h>
 #include <drm_fourcc.h>
-#include <wlr/types/wlr_scene.h>
+#include "scenefx_compat.h"
 #include <wlr/types/wlr_output.h>
 #include <wlr/interfaces/wlr_buffer.h>
 #include <wlr/render/wlr_renderer.h>
@@ -1294,6 +1294,13 @@ screen_composite_scene_node(struct wlr_scene_node *node, int lx, int ly,
 			screen_composite_scene_node(child, lx, ly, data);
 		break;
 	}
+#ifdef HAVE_SCENEFX
+	/* GPU-only effects: nothing to composite into a CPU Cairo surface. */
+	case WLR_SCENE_NODE_SHADOW:
+	case WLR_SCENE_NODE_OPTIMIZED_BLUR:
+	case WLR_SCENE_NODE_BLUR:
+		break;
+#endif
 	}
 }
 

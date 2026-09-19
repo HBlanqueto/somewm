@@ -16,7 +16,7 @@
 #include <wlr/render/wlr_texture.h>
 #include <wlr/types/wlr_buffer.h>
 #include <wlr/types/wlr_compositor.h>
-#include <wlr/types/wlr_scene.h>
+#include "scenefx_compat.h"
 #include <wlr/util/log.h>
 
 #include "somewm_types.h"
@@ -1077,7 +1077,11 @@ crop_reapply(void *data)
 			wl_list_for_each(l, &m->layers[li], link) {
 				if (l->crop.applied || !l->rounded_config || !l->mapped)
 					continue;
+#ifdef HAVE_SCENEFX
+				layer_surface_scenefx_apply_radii(l);
+#else
 				layer_surface_crop_apply(l);
+#endif
 			}
 		}
 	}
@@ -1085,7 +1089,11 @@ crop_reapply(void *data)
 		Client *c = *ci;
 		if (c->crop.applied || !client_crop_radii(c, radii))
 			continue;
+#ifdef HAVE_SCENEFX
+		client_scenefx_apply_radii(c);
+#else
 		client_crop_apply(c);
+#endif
 	}
 }
 
@@ -1392,3 +1400,154 @@ contentcommitnotify(struct wl_listener *listener, void *data)
 	some_event_queue_signal0(globalconf_L, -1, SIG_SURFACE_COMMIT);
 	lua_pop(globalconf_L, 1);
 }
+
+/* ========== SceneFX shader rounding ==========
+ *
+ * With SceneFX the CPU crop (client_crop_apply / layer_surface_crop_apply) is
+ * replaced by shader corner radii on the scene buffers. The border ring is
+ * replaced by a single frame rect whose clipped_region punches out the content
+ * area. The inner hairline keeps its CPU-rendered buffer, which already traces
+ * the rounded contour. The radii source of truth (client_crop_radii /
+ * rounded_config) is unchanged, so the disabled build is byte-for-byte the
+ * same.
+ */
+
+#ifdef HAVE_SCENEFX
+
+static void
+scenefx_apply_iter(struct wlr_scene_buffer *buffer, int sx, int sy, void *data)
+{
+	(void)sx;
+	(void)sy;
+	wlr_scene_buffer_set_corner_radii(buffer, *(struct fx_corner_radii *)data);
+}
+
+/* Round the content buffers and per-side titlebars with shader corner radii.
+ * Re-applied on every surface commit because SceneFX resets buffer state when
+ * a new buffer is attached. */
+void
+client_scenefx_apply_radii(Client *c)
+{
+	struct wlr_box inner;
+	int inner_r[4];
+	bool active;
+	int tl, tt, tr, tb;
+	struct fx_corner_radii content;
+
+	if (!c->scene || !c->scene_surface)
+		return;
+
+	active = client_crop_inner_rect(c, &inner, inner_r);
+
+	tl = c->fullscreen ? 0 : c->titlebar[CLIENT_TITLEBAR_LEFT].size;
+	tt = c->fullscreen ? 0 : c->titlebar[CLIENT_TITLEBAR_TOP].size;
+	tr = c->fullscreen ? 0 : c->titlebar[CLIENT_TITLEBAR_RIGHT].size;
+	tb = c->fullscreen ? 0 : c->titlebar[CLIENT_TITLEBAR_BOTTOM].size;
+
+	/* A content corner is square where a titlebar covers it; the bar's own
+	 * buffer rounds that corner instead. */
+	content = active ? corner_radii_new(
+		(tl || tt) ? 0 : inner_r[ROUNDED_TL],
+		(tr || tt) ? 0 : inner_r[ROUNDED_TR],
+		(tr || tb) ? 0 : inner_r[ROUNDED_BR],
+		(tl || tb) ? 0 : inner_r[ROUNDED_BL])
+		: corner_radii_none();
+
+	wlr_scene_node_for_each_buffer(&c->scene_surface->node,
+		scenefx_apply_iter, &content);
+
+	/* Titlebars: each bar rounds only the corners it reaches. */
+	struct fx_corner_radii tb_corners[CLIENT_TITLEBAR_COUNT] = {
+		[CLIENT_TITLEBAR_TOP] = active ? corner_radii_new(
+			inner_r[ROUNDED_TL], inner_r[ROUNDED_TR], 0, 0) : corner_radii_none(),
+		[CLIENT_TITLEBAR_BOTTOM] = active ? corner_radii_new(
+			0, 0, inner_r[ROUNDED_BR], inner_r[ROUNDED_BL]) : corner_radii_none(),
+		[CLIENT_TITLEBAR_LEFT] = active ? corner_radii_new(
+			tt ? 0 : inner_r[ROUNDED_TL], 0, 0, tb ? 0 : inner_r[ROUNDED_BL])
+			: corner_radii_none(),
+		[CLIENT_TITLEBAR_RIGHT] = active ? corner_radii_new(
+			0, tt ? 0 : inner_r[ROUNDED_TR], tb ? 0 : inner_r[ROUNDED_BR], 0)
+			: corner_radii_none(),
+	};
+	for (client_titlebar_t bar = CLIENT_TITLEBAR_TOP; bar < CLIENT_TITLEBAR_COUNT; bar++) {
+		if (c->titlebar[bar].scene_buffer)
+			wlr_scene_buffer_set_corner_radii(c->titlebar[bar].scene_buffer,
+				tb_corners[bar]);
+	}
+
+	c->crop.applied = true;
+}
+
+/* Draw the border as one rounded frame rect with a clipped_region hole when
+ * the window is rounded; otherwise fall back to the four plain border rects. */
+void
+client_scenefx_update_border(Client *c, int frame_w, int frame_h)
+{
+	int radii[4];
+	bool active = client_crop_radii(c, radii);
+	bool want = active && c->bw > 0;
+
+	if (!want) {
+		if (c->border_frame)
+			wlr_scene_node_set_enabled(&c->border_frame->node, false);
+		return;
+	}
+
+	if (!c->border_frame) {
+		c->border_frame = wlr_scene_rect_create(c->scene, 0, 0, c->border[0]->color);
+		if (!c->border_frame)
+			return;
+		c->border_frame->node.data = c->scene->node.data;
+		wlr_scene_node_place_above(&c->border_frame->node, &c->border[3]->node);
+	}
+
+	/* Border rects collapse to nothing; the frame rect draws the border. */
+	for (int i = 0; i < 4; i++)
+		wlr_scene_rect_set_size(c->border[i], 0, 0);
+
+	int inner[4];
+	struct wlr_box hole;
+	hole = (struct wlr_box){ .x = c->bw, .y = c->bw,
+		.width = c->geometry.width, .height = c->geometry.height };
+	for (int i = 0; i < 4; i++) {
+		inner[i] = radii[i] - c->bw;
+		if (inner[i] < 0)
+			inner[i] = 0;
+	}
+
+	wlr_scene_rect_set_size(c->border_frame, frame_w, frame_h);
+	wlr_scene_node_set_position(&c->border_frame->node, 0, 0);
+	wlr_scene_rect_set_corner_radii(c->border_frame, corner_radii_new(
+		radii[ROUNDED_TL], radii[ROUNDED_TR],
+		radii[ROUNDED_BR], radii[ROUNDED_BL]));
+	wlr_scene_rect_set_clipped_region(c->border_frame, (struct clipped_region){
+		.area = hole,
+		.corners = corner_radii_new(inner[ROUNDED_TL], inner[ROUNDED_TR],
+			inner[ROUNDED_BR], inner[ROUNDED_BL]),
+	});
+	wlr_scene_node_set_enabled(&c->border_frame->node, true);
+}
+
+/* Shader rounding for layer surfaces that opted in via `corner_radius`. */
+void
+layer_surface_scenefx_apply_radii(LayerSurface *l)
+{
+	const rounded_config_t *cfg;
+	struct fx_corner_radii corners;
+
+	if (!l || !l->layer_surface || !l->scene)
+		return;
+
+	cfg = l->rounded_config;
+	if (!cfg || !cfg->enabled) {
+		corners = corner_radii_none();
+	} else {
+		corners = corner_radii_new(cfg->radii[ROUNDED_TL], cfg->radii[ROUNDED_TR],
+			cfg->radii[ROUNDED_BR], cfg->radii[ROUNDED_BL]);
+	}
+
+	wlr_scene_node_for_each_buffer(&l->scene->node, scenefx_apply_iter, &corners);
+	l->crop.applied = true;
+}
+
+#endif /* HAVE_SCENEFX */

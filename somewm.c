@@ -6196,8 +6196,13 @@ apply_geometry_to_wlroots(Client *c)
 
 	/* Rounded corners: swap the square border rects for a rounded ring
 	 * (content and titlebars are cropped per-pixel, see client_crop_*).
-	 * Fullscreen disables rounding so no app pixels are cut. */
+	 * Fullscreen disables rounding so no app pixels are cut. With SceneFX
+	 * this becomes a shader frame rect + clipped_region hole instead. */
+#ifdef HAVE_SCENEFX
+	client_scenefx_update_border(c, frame_w, frame_h);
+#else
 	client_crop_update_ring(c, frame_w, frame_h);
+#endif
 
 	/* Inner hairline (macOS-style light line inside the border). */
 	client_crop_update_innerline(c);
@@ -6343,8 +6348,12 @@ apply_geometry_to_wlroots(Client *c)
 	wlr_scene_subsurface_tree_set_clip(&c->scene_surface->node, &clip);
 
 	/* set_clip() made wlroots re-apply the raw client buffer; re-crop. */
+#ifdef HAVE_SCENEFX
+	client_scenefx_apply_radii(c);
+#else
 	if (c->crop.applied || client_crop_active(c))
 		client_crop_apply(c);
+#endif
 }
 
 void

@@ -26,7 +26,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <wayland-server-core.h>
-#include <wlr/types/wlr_scene.h>
+#include "scenefx_compat.h"
 #include <wlr/util/box.h>
 #include "common/luaclass.h"
 #include "common/luaobject.h"
@@ -165,6 +165,9 @@ struct client_t
     struct wlr_scene_tree *popups;
     /** Border rectangles */
     struct wlr_scene_rect *border[4];
+    /** Single rounded border frame rect (SceneFX only); replaces border[4]
+     * while a rounded window has a border, via a clipped_region hole. */
+    struct wlr_scene_rect *border_frame;
     /** Shadow configuration (NULL = use defaults) */
     shadow_config_t *shadow_config;
     /** Shadow scene nodes */

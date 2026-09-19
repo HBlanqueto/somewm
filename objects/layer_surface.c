@@ -286,7 +286,11 @@ luaA_layer_surface_set_corner_radius(lua_State *L, layer_surface_t *ls)
 	}
 	*ls->ls->rounded_config = new_config;
 
+#ifdef HAVE_SCENEFX
+	layer_surface_scenefx_apply_radii(ls->ls);
+#else
 	layer_surface_crop_apply(ls->ls);
+#endif
 
 	luaA_object_emit_signal(L, -3, "property::corner_radius", 0);
 	return 0;

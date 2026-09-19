@@ -44,4 +44,11 @@ void layer_surface_crop_release(LayerSurface *l);
 void layer_surface_crop_reload(void);
 void layer_surface_cropcommitnotify(struct wl_listener *listener, void *data);
 
+#ifdef HAVE_SCENEFX
+/* SceneFX shader rounding: replaces the CPU crop path when compiled in. */
+void client_scenefx_apply_radii(Client *c);
+void client_scenefx_update_border(Client *c, int frame_w, int frame_h);
+void layer_surface_scenefx_apply_radii(LayerSurface *l);
+#endif
+
 #endif /* WINDOW_H */

@@ -12,7 +12,7 @@
 
 #include <cairo/cairo.h>
 #include <wlr/render/wlr_renderer.h>
-#include <wlr/types/wlr_scene.h>
+#include "scenefx_compat.h"
 
 /* wlr_scene_node_for_each_buffer() reports (sx, sy) accumulated from the
  * starting node down INCLUDING the starting node's own position. Callers

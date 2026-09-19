@@ -70,7 +70,7 @@ static lua_State *luaA_create_fresh_state(void);
 #include "xkb.h"
 #include <xkbcommon/xkbcommon.h>
 #include <wayland-server-core.h>
-#include <wlr/types/wlr_scene.h>
+#include "scenefx_compat.h"
 #include <wlr/backend/wayland.h>
 #include <wlr/types/wlr_buffer.h>
 #include <drm_fourcc.h>
@@ -1557,6 +1557,117 @@ luaA_awesome_corner_reload(lua_State *L)
 	return 0;
 }
 
+#ifdef HAVE_SCENEFX
+/* Internal test hook: read back the shader corner radii SceneFX applied to a
+ * client or layer surface. Returns { content = {tl,tr,br,bl},
+ * titlebars = { {tl,tr,br,bl} x4 }, border_frame = bool } for clients, or
+ * { content = {tl,tr,br,bl} } for layer surfaces; nil when not mapped. */
+struct scenefx_find {
+	struct wlr_surface *surface;
+	struct fx_corner_radii corners;
+	bool got;
+};
+
+static void
+scenefx_find_iter(struct wlr_scene_buffer *buffer, int sx, int sy, void *data)
+{
+	struct scenefx_find *f = data;
+	struct wlr_scene_surface *ss;
+
+	(void)sx;
+	(void)sy;
+	if (f->got)
+		return;
+	ss = wlr_scene_surface_try_from_buffer(buffer);
+	if (ss && ss->surface == f->surface) {
+		f->corners = buffer->corners;
+		f->got = true;
+	}
+}
+
+static void
+scenefx_push_radii(lua_State *L, struct fx_corner_radii corners)
+{
+	lua_newtable(L);
+	lua_pushinteger(L, corners.top_left);
+	lua_setfield(L, -2, "tl");
+	lua_pushinteger(L, corners.top_right);
+	lua_setfield(L, -2, "tr");
+	lua_pushinteger(L, corners.bottom_right);
+	lua_setfield(L, -2, "br");
+	lua_pushinteger(L, corners.bottom_left);
+	lua_setfield(L, -2, "bl");
+}
+
+static struct wlr_surface *
+scenefx_client_surface(client_t *c)
+{
+#ifdef XWAYLAND
+	if (c->client_type == X11)
+		return c->surface.xwayland->surface;
+#endif
+	return c->surface.xdg->surface;
+}
+
+static int
+luaA_awesome_scenefx_info(lua_State *L)
+{
+	client_t *c = luaA_toudata(L, 1, &client_class);
+
+	if (c) {
+		struct scenefx_find find = {0};
+		lua_newtable(L);
+		if (c->scene_surface && c->surface.xdg) {
+			find.surface = scenefx_client_surface(c);
+			wlr_scene_node_for_each_buffer(&c->scene_surface->node,
+				scenefx_find_iter, &find);
+		}
+		if (find.got) {
+			scenefx_push_radii(L, find.corners);
+		} else {
+			lua_pushnil(L);
+		}
+		lua_setfield(L, -2, "content");
+
+		lua_newtable(L);
+		for (int bar = 0; bar < CLIENT_TITLEBAR_COUNT; bar++) {
+			lua_pushinteger(L, bar + 1);
+			if (c->titlebar[bar].scene_buffer) {
+				scenefx_push_radii(L, c->titlebar[bar].scene_buffer->corners);
+			} else {
+				lua_pushnil(L);
+			}
+			lua_settable(L, -3);
+		}
+		lua_setfield(L, -2, "titlebars");
+
+		lua_pushboolean(L, c->border_frame
+			&& c->border_frame->node.enabled);
+		lua_setfield(L, -2, "border_frame");
+		return 1;
+	}
+
+	layer_surface_t *ls = luaA_toudata(L, 1, &layer_surface_class);
+	if (ls && ls->ls && ls->ls->scene) {
+		struct scenefx_find find = {0};
+		lua_newtable(L);
+		find.surface = ls->ls->layer_surface->surface;
+		wlr_scene_node_for_each_buffer(&ls->ls->scene->node,
+			scenefx_find_iter, &find);
+		if (find.got) {
+			scenefx_push_radii(L, find.corners);
+		} else {
+			lua_pushnil(L);
+		}
+		lua_setfield(L, -2, "content");
+		return 1;
+	}
+
+	lua_pushnil(L);
+	return 1;
+}
+#endif
+
 /* ==========================================================================
  * Lock API Methods
  * ========================================================================== */
@@ -2276,6 +2387,9 @@ const luaL_Reg awesome_methods[] = {
 	{ "restart", luaA_restart },
 	{ "shadow_reload", luaA_awesome_shadow_reload },
 	{ "corner_reload", luaA_awesome_corner_reload },
+#ifdef HAVE_SCENEFX
+	{ "_scenefx_info", luaA_awesome_scenefx_info },
+#endif
 	{ "_test_add_output", luaA_awesome_test_add_output },
 	/* Lock API methods */
 	{ "lock", luaA_awesome_lock },

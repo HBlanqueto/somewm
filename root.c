@@ -31,7 +31,7 @@
 #include <wlr/types/wlr_output_layout.h>
 #include <linux/input-event-codes.h>
 #include <time.h>
-#include <wlr/types/wlr_scene.h>
+#include "scenefx_compat.h"
 #include <wlr/render/wlr_renderer.h>
 #include <wlr/render/wlr_texture.h>
 #include <wlr/render/pass.h>
@@ -1909,6 +1909,13 @@ composite_scene_node_to_cairo(struct wlr_scene_node *node, int lx, int ly,
 			composite_scene_node_to_cairo(child, lx, ly, data);
 		break;
 	}
+#ifdef HAVE_SCENEFX
+	/* GPU-only effects: nothing to composite into a CPU Cairo surface. */
+	case WLR_SCENE_NODE_SHADOW:
+	case WLR_SCENE_NODE_OPTIMIZED_BLUR:
+	case WLR_SCENE_NODE_BLUR:
+		break;
+#endif
 	}
 }
 
