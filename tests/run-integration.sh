@@ -45,7 +45,12 @@ export LUA_PATH="$ROOT_DIR/lua/?.lua;$ROOT_DIR/lua/?/init.lua;$ROOT_DIR/tests/?.
 # Wayland backend setup based on HEADLESS mode
 if [ "$HEADLESS" = 1 ]; then
     export WLR_BACKENDS=headless
-    export WLR_RENDERER=pixman
+    if "$SOMEWM" --version 2>/dev/null | grep -q 'SceneFX: yes'; then
+        # SceneFX renders through its GLES2 fx renderer only (no pixman fallback).
+        export WLR_RENDERER=gles2
+    else
+        export WLR_RENDERER=pixman
+    fi
 else
     export WLR_BACKENDS=wayland
     # Use GPU renderer in visual mode

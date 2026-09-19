@@ -72,6 +72,13 @@ start() {
     fi
     printf '%s\n' "$mode" > "$STATEDIR/nested-mode"
 
+    # SceneFX renders only through its GLES2 fx renderer; a plain build keeps
+    # pixman here so it still runs on machines without a GPU.
+    local renderer=pixman
+    if "$BIN" --version 2>/dev/null | grep -q 'SceneFX: yes'; then
+        renderer=gles2
+    fi
+
     env \
         LUA_PATH="$HOME/.config/somewm/?.lua;$HOME/.config/somewm/?/init.lua;$ROOT/lua/?.lua;$ROOT/lua/?/init.lua;$LGI/share/lua/5.1/?.lua;$LGI/share/lua/5.1/?/init.lua" \
         LUA_CPATH="$LGI/lib/lua/5.1/?.so;;" \
@@ -79,7 +86,7 @@ start() {
         GDK_PIXBUF_MODULE_FILE="$PIXBUF_MODULES" \
         "${extra[@]}" \
         WLR_BACKENDS=wayland \
-        WLR_RENDERER=pixman \
+        WLR_RENDERER="$renderer" \
         WLR_WL_OUTPUTS=1 \
         TERMINAL=foot \
         NO_AT_BRIDGE=1 \

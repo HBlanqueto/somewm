@@ -60,7 +60,10 @@
 #include <wlr/types/wlr_primary_selection.h>
 #include <wlr/types/wlr_primary_selection_v1.h>
 #include <wlr/types/wlr_relative_pointer_v1.h>
-#include <wlr/types/wlr_scene.h>
+#include "scenefx_compat.h"
+#ifdef HAVE_SCENEFX
+#include <scenefx/render/fx_renderer/fx_renderer.h>
+#endif
 #include <wlr/types/wlr_screencopy_v1.h>
 #include <wlr/types/wlr_seat.h>
 #include <wlr/types/wlr_server_decoration.h>
@@ -4532,8 +4535,13 @@ gpureset(struct wl_listener *listener, void *data)
 	struct wlr_renderer *old_drw = drw;
 	struct wlr_allocator *old_alloc = alloc;
 	struct Monitor *m;
+#ifdef HAVE_SCENEFX
+	if (!(drw = fx_renderer_create(backend)))
+		die("couldn't recreate the SceneFX renderer (rebuild with -Dscenefx=disabled for a pixman-capable build)");
+#else
 	if (!(drw = wlr_renderer_autocreate(backend)))
 		die("couldn't recreate renderer");
+#endif
 
 	if (!(alloc = wlr_allocator_autocreate(backend, drw)))
 		die("couldn't recreate allocator");
@@ -7181,10 +7189,17 @@ setup(void)
 	 * can also specify a renderer using the WLR_RENDERER env var.
 	 * The renderer is responsible for defining the various pixel formats it
 	 * supports for shared memory, this configures that for clients. */
+#ifdef HAVE_SCENEFX
+	if (!(drw = fx_renderer_create(backend)))
+		die("couldn't create the SceneFX renderer\n"
+			"SceneFX needs GLES2 (a GPU or a render node); there is no pixman or Vulkan fallback\n"
+			"Rebuild with -Dscenefx=disabled for a pixman-capable build, or set WLR_RENDERER=gles2");
+#else
 	if (!(drw = wlr_renderer_autocreate(backend)))
 		die("couldn't create renderer\n"
 			"Try setting WLR_RENDERER=gles2 or WLR_RENDERER=pixman\n"
 			"Run with WLR_DEBUG=1 for more details");
+#endif
 	wl_signal_add(&drw->events.lost, &gpu_reset);
 
 	/* Create shm, drm and linux_dmabuf interfaces by ourselves.
@@ -8954,6 +8969,11 @@ print_version_info(const char **paths, int num_paths)
 
 	printf("**somewm:** %s (%s)\n", VERSION, COMMIT_DATE);
 	printf("**wlroots:** %s\n", WLROOTS_VERSION);
+#ifdef HAVE_SCENEFX
+	printf("**SceneFX:** yes\n");
+#else
+	printf("**SceneFX:** no\n");
+#endif
 	printf("**Lua:** %s (compiled: %s)\n", get_lua_runtime_version(L), LUA_RELEASE);
 	printf("**LGI:** %s\n", get_lgi_version(L));
 

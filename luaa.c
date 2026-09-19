@@ -2318,6 +2318,15 @@ luaA_awesome_index(lua_State *L)
 		return 1;
 	}
 
+	if (A_STREQ(key, "scenefx")) {
+#ifdef HAVE_SCENEFX
+		lua_pushboolean(L, 1);
+#else
+		lua_pushboolean(L, 0);
+#endif
+		return 1;
+	}
+
 	if (A_STREQ(key, "startup_errors")) {
 		if (globalconf.startup_errors.len == 0)
 			return 0;

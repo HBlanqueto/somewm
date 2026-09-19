@@ -202,6 +202,32 @@ endif
 # The Debian CI job greps this line to prove `auto` picks 0.19 there; keep the wording.
 message('Using wlroots version: ' + wlroots_version)
 
+# SceneFX (optional visual effects: shader-rounded corners, GPU shadows, blur).
+# Only SceneFX 0.5 is supported, and it builds against wlroots 0.20. When
+# wlroots 0.19 is selected (older distros) SceneFX stays disabled: 0.4's API
+# (enum corner_location, per-buffer blur) is not implemented in this fork.
+scenefx_option = get_option('scenefx')
+have_scenefx = false
+scenefx = dependency('', required: false)
+if wlroots_version == '0.20' and not scenefx_option.disabled()
+  scenefx = dependency('scenefx-0.5', required: false)
+  if not scenefx.found()
+    scenefx_sub = subproject('scenefx', required: false)
+    if scenefx_sub.found()
+      scenefx = scenefx_sub.get_variable('scenefx')
+    endif
+  endif
+  have_scenefx = scenefx.found()
+endif
+if scenefx_option.enabled() and not have_scenefx
+  if wlroots_version != '0.20'
+    error('SceneFX requires wlroots 0.20 (selected ' + wlroots_version + '). Use -Dwlroots_version=0.20.')
+  else
+    error('SceneFX was requested (-Dscenefx=enabled) but scenefx-0.5 could not be found')
+  endif
+endif
+message('SceneFX visual effects: ' + (have_scenefx ? 'enabled' : 'disabled'))
+
 # PAM authentication (optional, for lock screen)
 pam_option = get_option('pam')
 # There are three cases: If pam_option is disabled, we do not look for and do
@@ -414,6 +440,10 @@ if have_pam
   add_project_arguments('-DHAVE_PAM', language: 'c')
 endif
 
+if have_scenefx
+  add_project_arguments('-DHAVE_SCENEFX', language: 'c')
+endif
+
 if get_option('test_pam')
   add_project_arguments('-DTEST_PAM', language: 'c')
 endif
@@ -514,6 +544,9 @@ all_deps = [
   pangocairo,
   gdk_pixbuf,
   lua_dep,
+  # SceneFX must precede wlroots so its wlr_scene_* symbols interpose over
+  # wlroots' own (both define them; the dynamic linker picks the first).
+  scenefx,
   wlroots,
   m_dep,
 ]
@@ -795,4 +828,5 @@ summary({
   'LGI': lgi_version,
   'Xwayland': have_xwayland,
   'Systemd': have_systemd,
+  'SceneFX': have_scenefx,
 }, section: 'Configuration')

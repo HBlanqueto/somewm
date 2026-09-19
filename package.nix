@@ -21,6 +21,7 @@
   pam,
   pango,
   pkg-config,
+  scenefx,
   wayland,
   wayland-protocols,
   wayland-scanner,
@@ -78,6 +79,7 @@ stdenv.mkDerivation {
     pango
     wayland
     wayland-protocols
+    scenefx
     wlroots_0_20
     libxcb
     libxcb-wm

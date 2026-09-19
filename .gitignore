@@ -20,7 +20,9 @@ builddir/
 subprojects/wlroots/
 subprojects/wlroots-0.19/
 subprojects/wlroots-0.20/
+subprojects/scenefx/
 subprojects/packagecache/
+subprojects/.wraplock
 
 # Development tooling & reports (local only)
 tools/
