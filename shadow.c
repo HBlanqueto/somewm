@@ -441,6 +441,32 @@ shadow_create(struct wlr_scene_tree *parent,
     if (!config->enabled)
         return true;
 
+#ifdef HAVE_SCENEFX
+    /* GPU shadow: a single wlr_scene_shadow node behind the object. The
+     * nine-patch slice pipeline below is skipped entirely. */
+    shadow->tree = wlr_scene_tree_create(parent);
+    if (!shadow->tree)
+        return false;
+
+    wlr_scene_node_lower_to_bottom(&shadow->tree->node);
+
+    shadow->sfx_shadow = wlr_scene_shadow_create(shadow->tree,
+        1, 1, 0, 0, (float[4]){ 0.0f, 0.0f, 0.0f, 0.0f });
+    if (!shadow->sfx_shadow) {
+        wlr_scene_node_destroy(&shadow->tree->node);
+        shadow->tree = NULL;
+        return false;
+    }
+
+    shadow->user_visible = true;
+    shadow->size_ok = true;
+    shadow->last_width = -1;
+    shadow->last_height = -1;
+    shadow->config = *config;
+    shadow_update_geometry(shadow, config, width, height);
+    return true;
+#endif
+
     if (!shadow_render_textures(shadow, config))
         return false;
 
@@ -529,6 +555,46 @@ shadow_place_slice(struct wlr_scene_buffer *slice, int x, int y, int w, int h)
     wlr_scene_buffer_set_dest_size(slice, w, h);
 }
 
+#ifdef HAVE_SCENEFX
+/**
+ * Geometry update for the SceneFX GPU shadow.
+ *
+ * The shader renders the shadow of a rounded rect that is the shadow node's
+ * box inset by blur_sigma on every side (box_shadow.frag), so the node is
+ * sized to the object footprint grown by the falloff and offset by it. SceneFX
+ * shadows take a single corner radius, so the widest of the four configured
+ * corner radii is used. opacity is baked into the color's alpha channel.
+ */
+static void
+shadow_sfx_update_geometry(shadow_nodes_t *shadow,
+                           const shadow_config_t *config,
+                           int width, int height)
+{
+    /* The nine-patch's authoritative shadow rect is the object grown by
+     * `spread` and translated by (offset_x, offset_y); the shader derives it
+     * as the node box inset by blur_sigma, so grow the node by 2*spread and
+     * shift it by -spread to reproduce the same box. */
+    int radius = shadow_radius(config);
+    int w = width + 2 * config->spread + 2 * radius;
+    int h = height + 2 * config->spread + 2 * radius;
+    int x = config->offset_x - config->spread - radius;
+    int y = config->offset_y - config->spread - radius;
+    float paint = shadow_paint(config);
+
+    struct wlr_scene_shadow *sfx = shadow->sfx_shadow;
+    wlr_scene_shadow_set_size(sfx, w, h);
+    wlr_scene_shadow_set_corner_radius(sfx,
+        shadow_max_corner_radius(config));
+    wlr_scene_shadow_set_blur_sigma(sfx, radius);
+    float color[4] = { config->color[0], config->color[1],
+                       config->color[2], paint };
+    wlr_scene_shadow_set_color(sfx, color);
+    wlr_scene_node_set_position(&sfx->node, x, y);
+    wlr_scene_node_set_enabled(&sfx->node,
+        shadow->user_visible && shadow->size_ok);
+}
+#endif
+
 void
 shadow_update_geometry(shadow_nodes_t *shadow,
                       const shadow_config_t *config,
@@ -544,6 +610,13 @@ shadow_update_geometry(shadow_nodes_t *shadow,
         return;
     shadow->last_width = width;
     shadow->last_height = height;
+
+#ifdef HAVE_SCENEFX
+    if (shadow->sfx_shadow) {
+        shadow_sfx_update_geometry(shadow, config, width, height);
+        return;
+    }
+#endif
 
     int radius = shadow_radius(config);
     int rtl = shadow_corner_radius(config, SHADOW_CORNER_TL);

@@ -1644,6 +1644,37 @@ luaA_awesome_scenefx_info(lua_State *L)
 		lua_pushboolean(L, c->border_frame
 			&& c->border_frame->node.enabled);
 		lua_setfield(L, -2, "border_frame");
+
+		lua_newtable(L);
+		struct wlr_scene_shadow *sfc = c->shadow.sfx_shadow;
+		if (sfc) {
+			lua_pushinteger(L, sfc->node.enabled ? 1 : 0);
+			lua_setfield(L, -2, "visible");
+			lua_pushinteger(L, sfc->node.x);
+			lua_setfield(L, -2, "x");
+			lua_pushinteger(L, sfc->node.y);
+			lua_setfield(L, -2, "y");
+			lua_pushinteger(L, sfc->width);
+			lua_setfield(L, -2, "width");
+			lua_pushinteger(L, sfc->height);
+			lua_setfield(L, -2, "height");
+			lua_pushinteger(L, sfc->corner_radius);
+			lua_setfield(L, -2, "corner_radius");
+			lua_pushnumber(L, sfc->blur_sigma);
+			lua_setfield(L, -2, "blur_sigma");
+			lua_pushnumber(L, sfc->color[0]);
+			lua_setfield(L, -2, "r");
+			lua_pushnumber(L, sfc->color[1]);
+			lua_setfield(L, -2, "g");
+			lua_pushnumber(L, sfc->color[2]);
+			lua_setfield(L, -2, "b");
+			lua_pushnumber(L, sfc->color[3]);
+			lua_setfield(L, -2, "a");
+		} else {
+			lua_pushnil(L);
+			lua_setfield(L, -2, "visible");
+		}
+		lua_setfield(L, -2, "shadow");
 		return 1;
 	}
 
