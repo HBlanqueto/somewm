@@ -16,6 +16,7 @@
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <malloc.h>
 #include <sys/wait.h>
 #include <sys/time.h>
 #include <sys/utsname.h>
@@ -6717,6 +6718,19 @@ some_refresh(void)
 	in_refresh = false;
 }
 
+/* Periodically trim the glibc heap. Client commits (rounded-corner crop,
+ * Cairo widget redraws, Pango text metrics) allocate and free a lot of small
+ * buffers; glibc keeps the freed top-of-heap (brk) pages, so the RSS of a
+ * long-lived compositor climbs toward a multi-GB high-watermark that is not a
+ * real leak. malloc_trim(0) returns those free pages to the OS. */
+static gboolean
+trim_heap_timeout(gpointer data)
+{
+	(void)data;
+	malloc_trim(0);
+	return G_SOURCE_CONTINUE;
+}
+
 void
 run(char *startup_cmd)
 {
@@ -6889,6 +6903,10 @@ run(char *startup_cmd)
 
 	/* Create and run GLib main loop (matches AwesomeWM) */
 	globalconf.loop = g_main_loop_new(NULL, FALSE);
+
+	/* Periodically release freed glibc heap back to the OS (see
+	 * trim_heap_timeout). */
+	g_timeout_add_seconds(30, trim_heap_timeout, NULL);
 
 	/* Check stack before entering main loop (matches AwesomeWM's pattern) */
 	if (globalconf_L && lua_gettop(globalconf_L) != 0) {
