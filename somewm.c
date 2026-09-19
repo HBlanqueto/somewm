@@ -1829,6 +1829,9 @@ createlayersurface(struct wl_listener *listener, void *data)
 	 * the scene graph reflect the new buffer before the commit handler calls
 	 * motionnotify(0, ...) to re-evaluate pointer focus on map. */
 	LISTEN(&surface->events.commit, &l->surface_commit, commitlayersurfacenotify);
+	/* Opt-in corner crop: re-punch whenever the client commits a buffer
+	 * (wlroots re-attaches the raw buffer on commit, undoing the punch). */
+	LISTEN(&surface->events.commit, &l->crop_commit, layer_surface_cropcommitnotify);
 	l->scene = l->scene_layer->tree;
 	l->popups = surface->data = wlr_scene_tree_create(layer_surface->current.layer
 			< ZWLR_LAYER_SHELL_V1_LAYER_TOP ? layers[LyrTop] : scene_layer);
@@ -3507,6 +3510,9 @@ destroylayersurfacenotify(struct wl_listener *listener, void *data)
 	wl_list_remove(&l->destroy.link);
 	wl_list_remove(&l->unmap.link);
 	wl_list_remove(&l->surface_commit.link);
+	wl_list_remove(&l->crop_commit.link);
+	layer_surface_crop_release(l);
+	free(l->rounded_config);
 	wlr_scene_node_destroy(&l->scene->node);
 	wlr_scene_node_destroy(&l->popups->node);
 	free(l);

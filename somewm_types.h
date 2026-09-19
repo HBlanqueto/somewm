@@ -20,6 +20,8 @@
 #include <wlr/types/wlr_xdg_shell.h>
 #include <xkbcommon/xkbcommon.h>
 
+#include "rounded.h"
+
 #ifdef XWAYLAND
 #include <wlr/xwayland.h>
 #endif
@@ -152,6 +154,14 @@ typedef struct LayerSurface {
 	struct wl_listener destroy;
 	struct wl_listener unmap;
 	struct wl_listener surface_commit;
+
+	/* Opt-in compositor corner rounding (true alpha punch, reusing the same
+	 * rounded_crop_* machinery as drawins). NULL by default - layer surfaces
+	 * self-draw their corners (Waybar, quickshell). The Lua `corner_radius`
+	 * property allocates it and `crop` holds the punched buffer copy. */
+	rounded_config_t *rounded_config;
+	rounded_crop_t crop;
+	struct wl_listener crop_commit;
 
 	/* Lua object reference (NULL if not managed by Lua) */
 	struct layer_surface_t *lua_object;

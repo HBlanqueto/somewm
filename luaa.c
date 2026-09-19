@@ -1550,6 +1550,10 @@ luaA_awesome_corner_reload(lua_State *L)
 	foreach(d, globalconf.drawins)
 		drawin_apply_rounded_refresh(*d);
 
+	/* Update layer surfaces that opted into compositor rounding via the
+	 * `corner_radius` property (self-rounded clients stay untouched) */
+	layer_surface_crop_reload();
+
 	return 0;
 }
 

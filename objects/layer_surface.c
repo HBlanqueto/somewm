@@ -5,6 +5,7 @@
  * to Lua with a signal/permission model matching AwesomeWM's client pattern.
  */
 
+#include <stdlib.h>
 #include <wlr/types/wlr_layer_shell_v1.h>
 
 #include "globalconf.h"
@@ -15,6 +16,8 @@
 #include "common/luaclass.h"
 #include "common/luaobject.h"
 #include "somewm_api.h"
+#include "rounded.h"
+#include "../window.h"
 
 /* Global monitor list from somewm.c; each Monitor owns the per-layer lists the
  * rebuild walks. */
@@ -241,6 +244,52 @@ luaA_layer_surface_get_focusable(lua_State *L, layer_surface_t *ls)
 		lua_pushboolean(L, false);
 	}
 	return 1;
+}
+
+/*
+ * corner_radius property getter/setter
+ *
+ * Layer surfaces are rounded client-side by default, so this is strictly
+ * opt-in. Setting a radius (or a config table) opts the surface into the
+ * compositor's shared true-crop mechanism - the same radius-10 punch used
+ * for wiboxes and notifications. Setting false/nil opts back out.
+ */
+
+static int
+luaA_layer_surface_get_corner_radius(lua_State *L, layer_surface_t *ls)
+{
+	if (ls->ls && ls->ls->rounded_config) {
+		rounded_config_to_lua(L, ls->ls->rounded_config);
+	} else {
+		lua_pushboolean(L, false);
+	}
+	return 1;
+}
+
+static int
+luaA_layer_surface_set_corner_radius(lua_State *L, layer_surface_t *ls)
+{
+	rounded_config_t new_config;
+
+	if (!ls->ls)
+		return luaL_error(L, "layer surface is gone");
+
+	if (!rounded_config_from_lua(L, -1, &new_config, true)) {
+		return luaL_error(L, "%s", lua_tostring(L, -1));
+	}
+
+	/* Reuse the existing allocation when the property is set again */
+	if (!ls->ls->rounded_config) {
+		ls->ls->rounded_config = malloc(sizeof(rounded_config_t));
+		if (!ls->ls->rounded_config)
+			return luaL_error(L, "out of memory");
+	}
+	*ls->ls->rounded_config = new_config;
+
+	layer_surface_crop_apply(ls->ls);
+
+	luaA_object_emit_signal(L, -3, "property::corner_radius", 0);
+	return 0;
 }
 
 /*
@@ -582,6 +631,7 @@ layer_surface_class_setup(lua_State *L)
 		{ "pid", NULL, (lua_class_propfunc_t) luaA_layer_surface_get_pid, NULL },
 		{ "has_keyboard_focus", (lua_class_propfunc_t) luaA_layer_surface_set_has_keyboard_focus, (lua_class_propfunc_t) luaA_layer_surface_get_has_keyboard_focus, (lua_class_propfunc_t) luaA_layer_surface_set_has_keyboard_focus },
 		{ "focusable", NULL, (lua_class_propfunc_t) luaA_layer_surface_get_focusable, NULL },
+		{ "corner_radius", (lua_class_propfunc_t) luaA_layer_surface_set_corner_radius, (lua_class_propfunc_t) luaA_layer_surface_get_corner_radius, (lua_class_propfunc_t) luaA_layer_surface_set_corner_radius },
 	};
 	luaA_class_add_properties(&layer_surface_class, properties, countof(properties));
 

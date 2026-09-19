@@ -36,6 +36,18 @@
  * change path can re-apply geometry without pulling in the lifecycle module. */
 void apply_geometry_to_wlroots(Client *c);
 
+/* Deferred crop re-apply idle machinery (see the block above
+ * cropcommitnotify): scene mutations for the rounded-corner punch must never
+ * run inside a wl_surface.commit emission, so they are queued as an idle
+ * callback on the display loop and applied after the dispatch completes. */
+extern struct wl_event_loop *event_loop;
+extern struct wl_list mons;
+
+static struct wl_event_source *crop_reapply_source;
+static bool crop_reapply_pending;
+static void crop_reapply(void *data);
+static void crop_schedule(void);
+
 /* LISTEN is defined in somewm.c; mirror it here for the child-surface hooks
  * this module owns. */
 #define LISTEN(E, L, H) wl_signal_add((E), ((L)->notify = (H), (L)))
@@ -289,7 +301,9 @@ client_crop_child_commit(struct wl_listener *listener, void *data)
 {
 	struct client_crop_child_entry *e =
 		wl_container_of(listener, e, commit);
-	client_crop_apply(e->c);
+
+	e->c->crop.applied = false;
+	crop_schedule();
 }
 
 /* A child (sub)surface is being destroyed outside the unmap path (e.g. a
@@ -1029,11 +1043,338 @@ client_crop_release(Client *c)
 	rounded_crop_release(&c->crop);
 }
 
+/* Deferred crop re-apply ----------------------------------------------
+ *
+ * Re-punching a client or layer-surface buffer touches the scene graph
+ * (wlr_scene_buffer_set_buffer_with_options / set_opaque_region) and reads
+ * client pixels (wlr_buffer_begin_data_ptr_access / wlr_texture_read_pixels,
+ * which on DMA-BUF clients maps the DRM buffer). Running that from inside a
+ * wl_surface.commit listener executes while wlroots is still walking its own
+ * list of commit listeners and before the commit has finished (it re-attaches
+ * the raw buffer and unlocks surface->buffer afterwards). On some drivers that
+ * interleaving scribbles over the commit-signal list. Applying the crop in an
+ * idle callback on the display loop runs it strictly after the dispatch that
+ * triggered the commit has completed, so the scene is only ever touched from
+ * outside the wayland dispatch stack.
+ *
+ * The idle walk only re-applies surfaces flagged stale (crop.applied == false,
+ * set by the commit listeners below), so idle frames with no client commits
+ * cost nothing and destroyed clients/layers are simply gone from the lists.
+ */
+static void
+crop_reapply(void *data)
+{
+	Monitor *m;
+	int radii[4];
+	int li;
+
+	crop_reapply_source = NULL;
+	crop_reapply_pending = false;
+
+	wl_list_for_each(m, &mons, link) {
+		for (li = 0; li < (int)(sizeof(m->layers) / sizeof(m->layers[0])); li++) {
+			LayerSurface *l;
+			wl_list_for_each(l, &m->layers[li], link) {
+				if (l->crop.applied || !l->rounded_config || !l->mapped)
+					continue;
+				layer_surface_crop_apply(l);
+			}
+		}
+	}
+	foreach(ci, globalconf.clients) {
+		Client *c = *ci;
+		if (c->crop.applied || !client_crop_radii(c, radii))
+			continue;
+		client_crop_apply(c);
+	}
+}
+
+static void
+crop_schedule(void)
+{
+	if (crop_reapply_pending)
+		return;
+	crop_reapply_pending = true;
+	if (!crop_reapply_source)
+		crop_reapply_source = wl_event_loop_add_idle(event_loop,
+			crop_reapply, NULL);
+}
+
 void
 cropcommitnotify(struct wl_listener *listener, void *data)
 {
 	Client *c = wl_container_of(listener, c, crop_commit);
-	client_crop_apply(c);
+
+	c->crop.applied = false;
+	crop_schedule();
+}
+
+/* ========== Layer-surface corner crop (opt-in) ==========
+ *
+ * Layer-shell surfaces (Waybar-style bars, quickshell, layer-shell
+ * notification daemons) render whatever corners they want client-side, so
+ * the compositor does not round them by default. Assigning the Lua
+ * layer_surface `corner_radius` property opts a surface into the shared
+ * mechanism: its committed buffer gets the same true alpha punch as drawins
+ * (rounded_crop_pixels), keeping the radius/arc treatment identical to
+ * wiboxes and notifications. No ring, innerline or shadow is added here -
+ * those stay client-side for layer surfaces.
+ */
+
+struct layer_crop_find {
+	struct wlr_surface *surface;
+	struct wlr_scene_buffer *found;
+};
+
+static void
+layer_crop_find_iter(struct wlr_scene_buffer *buffer, int sx, int sy, void *data)
+{
+	struct layer_crop_find *f = data;
+	struct wlr_scene_surface *ss;
+
+	if (f->found)
+		return;
+	ss = wlr_scene_surface_try_from_buffer(buffer);
+	if (ss && ss->surface == f->surface)
+		f->found = buffer;
+}
+
+/* Put the raw client buffer back and drop the punched copy. */
+static void
+layer_surface_crop_restore(LayerSurface *l)
+{
+	struct layer_crop_find find;
+	struct wlr_scene_buffer *sb;
+
+	if (!l || !l->layer_surface || !l->scene)
+		return;
+	find = (struct layer_crop_find){ .surface = l->layer_surface->surface };
+	wlr_scene_node_for_each_buffer(&l->scene->node, layer_crop_find_iter, &find);
+	sb = find.found;
+	if (sb && l->crop.applied && l->crop.buf && sb->buffer == l->crop.buf)
+		wlr_scene_buffer_set_buffer(sb, &l->layer_surface->surface->buffer->base);
+	rounded_crop_release(&l->crop);
+}
+
+void
+layer_surface_crop_apply(LayerSurface *l)
+{
+	const rounded_config_t *cfg;
+	struct wlr_surface *surface;
+	struct wlr_scene_buffer *sb;
+	struct layer_crop_find find;
+	struct wlr_box local;
+	int radii[4], i, any = 0;
+	double m_ox = 0.0, m_oy = 0.0, m_sx = 1.0, m_sy = 1.0;
+	double dest_w, dest_h;
+	bool reuse;
+
+	if (!l || !l->layer_surface || !l->scene)
+		return;
+	cfg = l->rounded_config;
+	if (!cfg || !cfg->enabled) {
+		layer_surface_crop_restore(l);
+		return;
+	}
+	surface = l->layer_surface->surface;
+	if (!surface || !surface->buffer)
+		return;
+
+	for (i = 0; i < 4; i++) {
+		radii[i] = cfg->radii[i] < 0 ? 0 : cfg->radii[i];
+		any += radii[i] > 0;
+	}
+	if (!any) {
+		layer_surface_crop_restore(l);
+		return;
+	}
+
+	find = (struct layer_crop_find){ .surface = surface };
+	wlr_scene_node_for_each_buffer(&l->scene->node, layer_crop_find_iter, &find);
+	sb = find.found;
+	if (!sb)
+		return;
+
+	/* Buffer -> node-local mapping (same derivation as client_crop_apply so
+	 * the arcs stay exact under fractional scale and viewport scaling). */
+	{
+		struct wlr_fbox src = sb->src_box;
+
+		dest_w = sb->dst_width;
+		dest_h = sb->dst_height;
+		if (sb->transform != WL_OUTPUT_TRANSFORM_NORMAL) {
+			double s = surface->current.scale > 0 ? surface->current.scale : 1.0;
+			m_sx = m_sy = s;
+			m_ox = m_oy = 0.0;
+		} else {
+			if (wlr_fbox_empty(&src)) {
+				src.x = 0;
+				src.y = 0;
+				src.width = sb->buffer->width;
+				src.height = sb->buffer->height;
+			}
+			if (dest_w <= 0) dest_w = src.width;
+			if (dest_h <= 0) dest_h = src.height;
+			m_sx = src.width / dest_w;
+			m_sy = src.height / dest_h;
+			m_ox = -src.x * (dest_w / src.width);
+			m_oy = -src.y * (dest_h / src.height);
+		}
+	}
+	if (dest_w <= 0 || dest_h <= 0)
+		return;
+	local = (struct wlr_box){
+		.x = 0,
+		.y = 0,
+		.width = (int)dest_w,
+		.height = (int)dest_h,
+	};
+
+	/* Any change to where the arcs fall invalidates every pixel of the
+	 * previous copy, not just the surface's damage. */
+	if (l->crop.buf
+			&& (memcmp(l->crop.radii, radii, sizeof(l->crop.radii)) != 0
+				|| l->crop.scale_x != m_sx || l->crop.scale_y != m_sy
+				|| l->crop.origin_x != m_ox || l->crop.origin_y != m_oy
+				|| l->crop.local.width != local.width
+				|| l->crop.local.height != local.height))
+		l->crop.dirty = true;
+
+	l->crop.scale_x = m_sx;
+	l->crop.scale_y = m_sy;
+	l->crop.origin_x = m_ox;
+	l->crop.origin_y = m_oy;
+	l->crop.local = local;
+	memcpy(l->crop.radii, radii, sizeof(l->crop.radii));
+
+	/* Reuse the cached crop when the client buffer is unchanged (wlroots
+	 * re-applies the raw buffer on every commit, even frame-only ones). */
+	reuse = l->crop.buf
+		&& l->crop.src == surface->buffer
+		&& !l->crop.dirty
+		&& pixman_region32_empty(&surface->buffer_damage);
+
+	if (!reuse) {
+		struct wlr_buffer *buf = NULL;
+		void *data = NULL;
+		uint32_t fmt = 0;
+		size_t stride = 0;
+
+		/* Read the client's pixels without going through the GPU (shm first,
+		 * texture readback as fallback) - identical to the client crop. */
+		if (wlr_buffer_begin_data_ptr_access(&surface->buffer->base,
+				WLR_BUFFER_DATA_PTR_ACCESS_READ, &data, &fmt, &stride)) {
+			buf = rounded_crop_copy_data(surface->buffer->base.width,
+				surface->buffer->base.height, data, stride, fmt);
+			wlr_buffer_end_data_ptr_access(&surface->buffer->base);
+		}
+		if (!buf) {
+			struct wlr_texture *tex = wlr_surface_get_texture(surface);
+			buf = tex ? rounded_crop_copy_texture(tex) : NULL;
+		}
+		if (!buf) {
+			static bool warned;
+			if (!warned) {
+				warn("rounded corners: cannot read layer surface buffer "
+					"(shm access and texture readback both failed)");
+				warned = true;
+			}
+			return;
+		}
+		if (wlr_buffer_begin_data_ptr_access(buf,
+				WLR_BUFFER_DATA_PTR_ACCESS_WRITE, &data, &fmt, &stride)) {
+			rounded_crop_pixels(data, stride, buf->width, buf->height,
+				m_ox, m_oy, m_sx, m_sy, &local, radii);
+			wlr_buffer_end_data_ptr_access(buf);
+		}
+		if (l->crop.buf)
+			wlr_buffer_drop(l->crop.buf);
+		l->crop.buf = buf;
+		l->crop.src = surface->buffer;
+	}
+
+	{
+		struct wlr_scene_buffer_set_buffer_options opts = {
+			.damage = l->crop.dirty ? NULL : &surface->buffer_damage,
+		};
+		wlr_scene_buffer_set_buffer_with_options(sb, l->crop.buf, &opts);
+	}
+
+	/* The corners are translucent now: shrink the opaque region (which lives
+	 * in buffer coordinates) by the cut corner squares so the renderer does
+	 * not treat the arcs as solid. */
+	{
+		pixman_region32_t opaque, holes;
+		const int r0 = radii[ROUNDED_TL], r1 = radii[ROUNDED_TR];
+		const int r2 = radii[ROUNDED_BL], r3 = radii[ROUNDED_BR];
+		const double ox = m_ox, oy = m_oy, sx = m_sx, sy = m_sy;
+		pixman_box32_t boxes[4] = {
+			{ (int)floor((local.x - ox) * sx), (int)floor((local.y - oy) * sy),
+			  (int)ceil((local.x + r0 - ox) * sx), (int)ceil((local.y + r0 - oy) * sy) },
+			{ (int)floor((local.x + local.width - r1 - ox) * sx), (int)floor((local.y - oy) * sy),
+			  (int)ceil((local.x + local.width - ox) * sx), (int)ceil((local.y + r1 - oy) * sy) },
+			{ (int)floor((local.x - ox) * sx), (int)floor((local.y + local.height - r2 - oy) * sy),
+			  (int)ceil((local.x + r2 - ox) * sx), (int)ceil((local.y + local.height - oy) * sy) },
+			{ (int)floor((local.x + local.width - r3 - ox) * sx), (int)floor((local.y + local.height - r3 - oy) * sy),
+			  (int)ceil((local.x + local.width - ox) * sx), (int)ceil((local.y + local.height - oy) * sy) },
+		};
+		pixman_region32_init(&opaque);
+		pixman_region32_copy(&opaque, &sb->opaque_region);
+		pixman_region32_init_rects(&holes, boxes, 4);
+		pixman_region32_subtract(&opaque, &opaque, &holes);
+		wlr_scene_buffer_set_opaque_region(sb, &opaque);
+		pixman_region32_fini(&holes);
+		pixman_region32_fini(&opaque);
+	}
+
+	l->crop.applied = true;
+	l->crop.dirty = false;
+}
+
+/* Re-apply on every surface commit (including frame-only ones): wlroots
+ * re-attaches the raw buffer each time, which would otherwise undo the punch. */
+void
+layer_surface_cropcommitnotify(struct wl_listener *listener, void *data)
+{
+	LayerSurface *l = wl_container_of(listener, l, crop_commit);
+
+	if (!l->rounded_config || !l->mapped)
+		return;
+	l->crop.applied = false;
+	crop_schedule();
+}
+
+/* Drop the punched copy (the scene buffer dies with l->scene). */
+void
+layer_surface_crop_release(LayerSurface *l)
+{
+	if (!l)
+		return;
+	rounded_crop_release(&l->crop);
+}
+
+/* Global monitor list from somewm.c. */
+extern struct wl_list mons;
+
+/* Corner config changed (theme reload): re-crop every layer surface that
+ * opted in via `corner_radius`. */
+void
+layer_surface_crop_reload(void)
+{
+	Monitor *m;
+	int li;
+
+	wl_list_for_each(m, &mons, link) {
+		for (li = 0; li < (int)(sizeof(m->layers) / sizeof(m->layers[0])); li++) {
+			LayerSurface *l;
+			wl_list_for_each(l, &m->layers[li], link) {
+				if (!l->rounded_config || !l->mapped)
+					continue;
+				l->crop.dirty = true;
+				layer_surface_crop_apply(l);
+			}
+		}
+	}
 }
 
 /* Content-change hook for Lua autocolor: one extra listener here matches

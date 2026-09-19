@@ -38,4 +38,10 @@ bool get_border_inner_enabled(void);
 bool get_border_inner_drawin_enabled(void);
 void client_init_border_inner_defaults(Client *c);
 
+/* Layer-surface corner crop (opt-in via Lua `corner_radius`) */
+void layer_surface_crop_apply(LayerSurface *l);
+void layer_surface_crop_release(LayerSurface *l);
+void layer_surface_crop_reload(void);
+void layer_surface_cropcommitnotify(struct wl_listener *listener, void *data);
+
 #endif /* WINDOW_H */
