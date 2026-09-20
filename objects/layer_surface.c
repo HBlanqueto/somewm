@@ -17,6 +17,7 @@
 #include "common/luaobject.h"
 #include "somewm_api.h"
 #include "rounded.h"
+#include "../scenefx_compat.h"
 #include "../window.h"
 
 /* Global monitor list from somewm.c; each Monitor owns the per-layer lists the
@@ -340,6 +341,70 @@ luaA_layer_surface_set_backdrop_blur(lua_State *L, layer_surface_t *ls)
 	layer_surface_blur_update(ls->ls);
 
 	luaA_object_emit_signal(L, -3, "property::backdrop_blur", 0);
+	return 0;
+}
+
+/*
+ * opacity property getter/setter
+ *
+ * Compositor-driven opacity for layer-shell panels (Waybar, Quickshell),
+ * so Lua can fade them on request::manage by namespace. Applies to the
+ * whole surface tree, popups included, and is re-applied on every surface
+ * commit because wlroots resets buffer opacity then. nil means unset and
+ * renders at 1.0.
+ */
+
+/** Apply opacity to a layer surface's scene and popup trees. */
+void
+layer_surface_apply_opacity(LayerSurface *l, float opacity)
+{
+	if (!l)
+		return;
+	if (l->scene)
+		scene_apply_opacity(&l->scene->node, opacity);
+	if (l->popups)
+		scene_apply_opacity(&l->popups->node, opacity);
+	/* Backdrop blur follows the buffer opacity through its own
+	 * alpha/strength (same as clients). */
+	blur_set_fade(&l->blur, opacity);
+}
+
+static int
+luaA_layer_surface_get_opacity(lua_State *L, layer_surface_t *ls)
+{
+	if (ls->opacity >= 0)
+		lua_pushnumber(L, ls->opacity);
+	else
+		lua_pushnumber(L, 1.0);
+	return 1;
+}
+
+static int
+luaA_layer_surface_set_opacity(lua_State *L, layer_surface_t *ls)
+{
+	double opacity;
+
+	if (!ls->ls)
+		return luaL_error(L, "layer surface is gone");
+
+	if (lua_isnil(L, -1)) {
+		opacity = -1.0;
+	} else {
+		opacity = luaL_checknumber(L, -1);
+		if (opacity < 0 || opacity > 1)
+			return luaL_error(L, "opacity must be between 0 and 1");
+	}
+
+	/* Skip the tree walk when nothing changed; steady-state frames
+	 * reassign the same value. */
+	if (ls->opacity != opacity) {
+		ls->opacity = opacity;
+		ls->ls->opacity = opacity;
+		layer_surface_apply_opacity(ls->ls,
+			opacity >= 0 ? (float)opacity : 1.0f);
+	}
+
+	luaA_object_emit_signal(L, -3, "property::opacity", 0);
 	return 0;
 }
 
@@ -684,6 +749,7 @@ layer_surface_class_setup(lua_State *L)
 		{ "focusable", NULL, (lua_class_propfunc_t) luaA_layer_surface_get_focusable, NULL },
 		{ "corner_radius", (lua_class_propfunc_t) luaA_layer_surface_set_corner_radius, (lua_class_propfunc_t) luaA_layer_surface_get_corner_radius, (lua_class_propfunc_t) luaA_layer_surface_set_corner_radius },
 		{ "backdrop_blur", (lua_class_propfunc_t) luaA_layer_surface_set_backdrop_blur, (lua_class_propfunc_t) luaA_layer_surface_get_backdrop_blur, (lua_class_propfunc_t) luaA_layer_surface_set_backdrop_blur },
+		{ "opacity", (lua_class_propfunc_t) luaA_layer_surface_set_opacity, (lua_class_propfunc_t) luaA_layer_surface_get_opacity, (lua_class_propfunc_t) luaA_layer_surface_set_opacity },
 	};
 	luaA_class_add_properties(&layer_surface_class, properties, countof(properties));
 

@@ -1568,6 +1568,10 @@ commitlayersurfacenotify(struct wl_listener *listener, void *data)
 	 * (cheap: setters no-op when nothing changed). Covers initial commit,
 	 * re-map and size/layer changes. */
 	layer_surface_blur_update(l);
+
+	/* Re-apply opacity after wlroots resets buffer opacity on commit. */
+	if (l->opacity >= 0)
+		layer_surface_apply_opacity(l, (float)l->opacity);
 }
 
 /* Handle initial XDG commit - sets scale, capabilities, size.
@@ -1720,8 +1724,18 @@ commitpopup(struct wl_listener *listener, void *data)
 		return;
 
 	/* Create scene surface for popup */
-	p->popup->base->surface->data = wlr_scene_xdg_surface_create(
+	struct wlr_scene_tree *ptree = wlr_scene_xdg_surface_create(
 			p->popup->parent->data, p->popup->base);
+	p->popup->base->surface->data = ptree;
+
+	/* Fresh popup buffers start at opacity 1.0; inherit the parent's fade
+	 * so menus don't pop opaque over a fading window or panel. */
+	if (ptree) {
+		double parent_opacity = type == LayerShell
+			? (l ? l->opacity : -1) : (c ? c->opacity : -1);
+		if (parent_opacity >= 0 && parent_opacity < 1.0)
+			scene_apply_opacity(&ptree->node, (float)parent_opacity);
+	}
 
 	if ((l && !l->mon) || (c && !c->mon)) {
 		wlr_xdg_popup_destroy(p->popup);
@@ -1830,6 +1844,7 @@ createlayersurface(struct wl_listener *listener, void *data)
 
 	l = layer_surface->data = ecalloc(1, sizeof(*l));
 	l->type = LayerShell;
+	l->opacity = -1;
 	LISTEN(&surface->events.unmap, &l->unmap, unmaplayersurfacenotify);
 	LISTEN(&layer_surface->events.destroy, &l->destroy, destroylayersurfacenotify);
 
@@ -5145,6 +5160,8 @@ mapnotify(struct wl_listener *listener, void *data)
 	for (i = 0; i < 4; i++)
 		c->border[i] = wlr_scene_rect_create(c->scene, 0, 0,
 				c->urgent ? get_urgentcolor() : get_bordercolor());
+	/* Record the unfaded theme color so opacity fades scale it later. */
+	client_border_set_base(c, c->urgent ? get_urgentcolor() : get_bordercolor());
 	client_set_node_data(c, c);
 
 	/* Shadow is lazily created by apply_geometry_to_wlroots() on the first

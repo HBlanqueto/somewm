@@ -127,6 +127,7 @@ typedef struct shadow_nodes_t {
     shadow_config_t config;                             /**< Config the textures were rendered for */
     bool user_visible;                                  /**< Visibility requested via shadow_set_visible */
     bool size_ok;                                       /**< Object large enough for the corner patches */
+    float fade;                                         /**< Fade multiplier, 1.0 = full */
 } shadow_nodes_t;
 
 /**
@@ -253,6 +254,17 @@ void shadow_update_config(shadow_nodes_t *shadow,
  * @param visible true to show, false to hide
  */
 void shadow_set_visible(shadow_nodes_t *shadow, bool visible);
+
+/**
+ * Scale the shadow's alpha by `fade` (0..1), for opacity fades.
+ * GPU node: rescales the color alpha (blends live on SceneFX 0.5).
+ * Nine-patch: attenuates the slice/fill buffer opacities. Survives
+ * geometry updates and config recreates via the stored factor.
+ *
+ * @param shadow Shadow nodes structure
+ * @param fade Fade multiplier, 1.0 = full
+ */
+void shadow_set_fade(shadow_nodes_t *shadow, float fade);
 
 /**
  * Destroy shadow nodes and free owned textures.

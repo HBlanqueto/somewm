@@ -88,6 +88,14 @@ luaA_tolayer_surface(lua_State *L, int idx)
 }
 
 /**
+ * Apply opacity to a layer surface's scene and popup trees.
+ * Called from the Lua `opacity` setter and re-applied on surface commits.
+ * @param l The C-level LayerSurface struct.
+ * @param opacity Effective opacity 0.0 to 1.0.
+ */
+void layer_surface_apply_opacity(LayerSurface *l, float opacity);
+
+/**
  * Setup the layer_surface Lua class.
  * Called from luaa.c during initialization.
  * @param L The Lua state.

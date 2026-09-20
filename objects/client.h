@@ -168,6 +168,12 @@ struct client_t
     /** Single rounded border frame rect (SceneFX only); replaces border[4]
      * while a rounded window has a border, via a clipped_region hole. */
     struct wlr_scene_rect *border_frame;
+    /** Unfaded border color (RGBA floats, 0..1). Opacity fades scale this
+     * alpha onto border[4] and border_frame, so the border follows the
+     * window during a fade even when border_color was never set by Lua.
+     * Refreshed by client_set_border_color() and client_border_refresh(). */
+    float border_color_base[4];
+    bool border_color_base_set;
     /** Shadow configuration (NULL = use defaults) */
     shadow_config_t *shadow_config;
     /** Shadow scene nodes */

@@ -1630,6 +1630,10 @@ client_blur_update(Client *c)
 
 	mask = blur_client_mask(c);
 	blur_apply(c->scene, &c->blur, c->blur_config, &area, inner_r, mask);
+	/* Blur tracks the window's own opacity, so commit-time re-application
+	 * needs no Lua coordination during fades. */
+	blur_set_fade(&c->blur,
+		c->opacity >= 0 ? (float)c->opacity : 1.0f);
 
 	/* Blur the backdrop, then paint the surface on top, never over it.
 	 * The node has to sit below content in the frame tree. */
@@ -1680,6 +1684,9 @@ layer_surface_blur_update(LayerSurface *l)
 
 	mask = blur_layer_mask(l);
 	blur_apply(l->scene, &l->blur, l->blur_config, &area, radii, mask);
+	/* Same opacity tracking as clients (see above). */
+	blur_set_fade(&l->blur,
+		l->opacity >= 0 ? (float)l->opacity : 1.0f);
 
 	/* Blur the backdrop, then paint the surface on top: keep the node below
 	 * the layer's whole surface subtree. lower_to_bottom needs no sibling,
@@ -1689,4 +1696,84 @@ layer_surface_blur_update(LayerSurface *l)
 		wlr_scene_node_lower_to_bottom(&l->blur.node->node);
 	}
 #endif
+}
+
+/* ========== Opacity-correct fades ==========
+ *
+ * Buffers fade through wlr_scene_buffer_set_opacity (see
+ * client_apply_opacity_to_scene); decorations follow through their own
+ * alpha channels so one Lua tick on `c.opacity` fades the whole window:
+ * border rects (plain wlroots rects blend color alpha in both builds),
+ * the shadow (GPU node color alpha, or nine-patch buffer opacity without
+ * SceneFX) and the backdrop blur (set_alpha + set_strength). No
+ * hide-during-fade is needed: unlike SceneFX 0.4, 0.5 blends rect and
+ * shadow color alpha live.
+ */
+
+/* Set every buffer in a scene (sub)tree to one opacity. Rect, shadow and
+ * blur nodes are skipped: they are decorations with their own alpha. */
+void
+scene_apply_opacity(struct wlr_scene_node *node, float opacity)
+{
+	struct wlr_scene_node *child;
+
+	if (!node)
+		return;
+	if (node->type == WLR_SCENE_NODE_BUFFER) {
+		wlr_scene_buffer_set_opacity(wlr_scene_buffer_from_node(node),
+			opacity);
+		return;
+	}
+	if (node->type != WLR_SCENE_NODE_TREE)
+		return;
+	wl_list_for_each(child,
+		&wlr_scene_tree_from_node(node)->children, link)
+		scene_apply_opacity(child, opacity);
+}
+
+/* Record a new unfaded border color (focus flip, Lua border_color, theme
+ * default) and immediately re-apply it scaled by the current opacity. */
+void
+client_border_set_base(Client *c, const float color[static 4])
+{
+	if (!c)
+		return;
+	memcpy(c->border_color_base, color, sizeof(c->border_color_base));
+	c->border_color_base_set = true;
+	client_fade_apply(c, c->opacity >= 0 ? (float)c->opacity : 1.0f);
+}
+
+/* Fade a client's decorations with its buffer opacity (0..1). */
+void
+client_fade_apply(Client *c, float opacity)
+{
+	float floats[4];
+	int i;
+
+	if (!c || !c->scene || !c->border[0])
+		return;
+	if (opacity < 0.0f)
+		opacity = 0.0f;
+	if (opacity > 1.0f)
+		opacity = 1.0f;
+
+	/* Backdrop blur tracks through its own alpha/strength. */
+	blur_set_fade(&c->blur, opacity);
+
+	/* Border rects blend their color alpha live. The base color may come
+	 * from Lua (border_color.initialized) or the theme default, so fade
+	 * whatever base is recorded, not just the Lua-set one. */
+	if (c->border_color_base_set) {
+		memcpy(floats, c->border_color_base, sizeof(floats));
+		floats[3] *= opacity;
+		for (i = 0; i < 4; i++)
+			wlr_scene_rect_set_color(c->border[i], floats);
+#ifdef HAVE_SCENEFX
+		if (c->border_frame)
+			wlr_scene_rect_set_color(c->border_frame, floats);
+#endif
+	}
+
+	/* Shadow follows through its own alpha or buffer opacity. */
+	shadow_set_fade(&c->shadow, opacity);
 }

@@ -2170,20 +2170,15 @@ client_border_refresh(void)
          * border_color change while fullscreen doesn't re-grow the frame. */
         c->bw = c->fullscreen ? 0 : c->border_width;
 
-        /* Update border color if initialized (matches AwesomeWM window_border_refresh pattern) */
+        /* Update border color if initialized (matches AwesomeWM window_border_refresh pattern).
+         * Record the unfaded color and let client_fade_apply scale it by the
+         * current opacity, so a border refresh mid-fade (e.g. focus flip)
+         * keeps the fade instead of snapping the border back to opaque. */
         if(c->border_color.initialized) {
             float color_floats[4];
-            int i;
 
             color_to_floats(&c->border_color, color_floats);
-
-            /* Apply color to all 4 border rectangles */
-            for(i = 0; i < 4; i++)
-                wlr_scene_rect_set_color(c->border[i], color_floats);
-#ifdef HAVE_SCENEFX
-            if (c->border_frame)
-                wlr_scene_rect_set_color(c->border_frame, color_floats);
-#endif
+            client_border_set_base(c, color_floats);
         }
     }
 }
@@ -4458,22 +4453,6 @@ luaA_client_set_urgent(lua_State *L, client_t *c)
     return 0;
 }
 
-/** Recursively apply opacity to all buffer nodes in a scene tree. */
-static void
-apply_opacity_to_tree(struct wlr_scene_node *node, float opacity)
-{
-    if (node->type == WLR_SCENE_NODE_BUFFER) {
-        struct wlr_scene_buffer *buf = wlr_scene_buffer_from_node(node);
-        wlr_scene_buffer_set_opacity(buf, opacity);
-    } else if (node->type == WLR_SCENE_NODE_TREE) {
-        struct wlr_scene_tree *tree = wlr_scene_tree_from_node(node);
-        struct wlr_scene_node *child;
-        wl_list_for_each(child, &tree->children, link) {
-            apply_opacity_to_tree(child, opacity);
-        }
-    }
-}
-
 /** Apply opacity to all buffers in the client's scene tree.
  * This includes titlebars and the XDG surface content.
  * Native Wayland compositing - no picom needed.
@@ -4495,7 +4474,12 @@ client_apply_opacity_to_scene(client_t *c, float opacity)
      * wlr_scene_xdg_surface_create() creates a nested tree structure,
      * so we need to recurse to find all buffer nodes. */
     if (c->scene_surface) {
-        apply_opacity_to_tree(&c->scene_surface->node, opacity);
+        scene_apply_opacity(&c->scene_surface->node, opacity);
+    }
+
+    /* Popups parent into their own tree; keep them in sync too. */
+    if (c->popups) {
+        scene_apply_opacity(&c->popups->node, opacity);
     }
 }
 
@@ -4527,12 +4511,14 @@ luaA_client_set_opacity(lua_State *L, client_t *c)
         /* nil = unset, restore to fully opaque */
         c->opacity = -1;
         client_apply_opacity_to_scene(c, 1.0f);
+        client_fade_apply(c, 1.0f);
     } else {
         double opacity = lua_tonumber(L, -1);
         if (opacity < 0 || opacity > 1)
             return luaL_error(L, "opacity must be between 0 and 1");
         c->opacity = opacity;
         client_apply_opacity_to_scene(c, (float)opacity);
+        client_fade_apply(c, (float)opacity);
     }
 
     luaA_object_emit_signal(L, -3, "property::opacity", 0);

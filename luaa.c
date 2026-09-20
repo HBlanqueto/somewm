@@ -1566,6 +1566,7 @@ luaA_awesome_corner_reload(lua_State *L)
 struct scenefx_find {
 	struct wlr_surface *surface;
 	struct fx_corner_radii corners;
+	float opacity;
 	bool got;
 };
 
@@ -1582,6 +1583,7 @@ scenefx_find_iter(struct wlr_scene_buffer *buffer, int sx, int sy, void *data)
 	ss = wlr_scene_surface_try_from_buffer(buffer);
 	if (ss && ss->surface == f->surface) {
 		f->corners = buffer->corners;
+		f->opacity = buffer->opacity;
 		f->got = true;
 	}
 }
@@ -1625,6 +1627,8 @@ luaA_awesome_scenefx_info(lua_State *L)
 		}
 		if (find.got) {
 			scenefx_push_radii(L, find.corners);
+			lua_pushnumber(L, find.opacity);
+			lua_setfield(L, -2, "opacity");
 		} else {
 			lua_pushnil(L);
 		}
@@ -1634,7 +1638,11 @@ luaA_awesome_scenefx_info(lua_State *L)
 		for (int bar = 0; bar < CLIENT_TITLEBAR_COUNT; bar++) {
 			lua_pushinteger(L, bar + 1);
 			if (c->titlebar[bar].scene_buffer) {
-				scenefx_push_radii(L, c->titlebar[bar].scene_buffer->corners);
+				struct wlr_scene_buffer *tb =
+					c->titlebar[bar].scene_buffer;
+				scenefx_push_radii(L, tb->corners);
+				lua_pushnumber(L, tb->opacity);
+				lua_setfield(L, -2, "opacity");
 			} else {
 				lua_pushnil(L);
 			}
@@ -1645,6 +1653,12 @@ luaA_awesome_scenefx_info(lua_State *L)
 		lua_pushboolean(L, c->border_frame
 			&& c->border_frame->node.enabled);
 		lua_setfield(L, -2, "border_frame");
+		if (c->border_frame) {
+			lua_pushnumber(L, c->border_frame->color[3]);
+		} else {
+			lua_pushnil(L);
+		}
+		lua_setfield(L, -2, "border_alpha");
 
 		lua_newtable(L);
 		struct wlr_scene_blur *blur = c->blur.node;
@@ -1716,6 +1730,8 @@ luaA_awesome_scenefx_info(lua_State *L)
 			scenefx_find_iter, &find);
 		if (find.got) {
 			scenefx_push_radii(L, find.corners);
+			lua_pushnumber(L, find.opacity);
+			lua_setfield(L, -2, "opacity");
 		} else {
 			lua_pushnil(L);
 		}

@@ -13,6 +13,7 @@
 #include "objects/client.h" /* For complete client_t definition */
 #include "wlr_compat.h"  /* For wlroots version compatibility */
 #include "common/util.h"  /* For log_debug */
+#include "window.h"  /* For client_border_set_base() */
 
 /* Leave these functions first; they're used in the others */
 static inline int
@@ -336,9 +337,7 @@ client_send_close(Client *c)
 static inline void
 client_set_border_color(Client *c, const float color[static 4])
 {
-	int i;
-	for (i = 0; i < 4; i++)
-		wlr_scene_rect_set_color(c->border[i], color);
+	client_border_set_base(c, color);
 }
 
 static inline void

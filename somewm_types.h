@@ -171,6 +171,11 @@ typedef struct LayerSurface {
 	blur_config_t *blur_config;
 	blur_nodes_t blur;
 
+	/* Compositor-driven opacity (-1 = unset, renders at 1.0). Mirrored
+	 * from the Lua `opacity` property; re-applied on every commit
+	 * because wlroots resets buffer opacity then. */
+	double opacity;
+
 	/* Lua object reference (NULL if not managed by Lua) */
 	struct layer_surface_t *lua_object;
 } LayerSurface;

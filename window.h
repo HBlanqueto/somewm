@@ -56,4 +56,12 @@ void layer_surface_scenefx_apply_radii(LayerSurface *l);
 void client_blur_update(Client *c);
 void layer_surface_blur_update(LayerSurface *l);
 
+/* Opacity-correct fades: one buffer walk plus per-decoration alpha.
+ * Vanilla scene API only, so safe to call in both builds. */
+struct wlr_scene_node;
+void scene_apply_opacity(struct wlr_scene_node *node, float opacity);
+void client_fade_apply(Client *c, float opacity);
+/* Record an unfaded border color and re-apply it scaled by current opacity. */
+void client_border_set_base(Client *c, const float color[static 4]);
+
 #endif /* WINDOW_H */

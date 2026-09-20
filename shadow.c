@@ -30,6 +30,7 @@
 #include "shadow.h"
 #include "color.h"
 #include "globalconf.h"
+#include "window.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -437,6 +438,7 @@ shadow_create(struct wlr_scene_tree *parent,
         return false;
 
     memset(shadow, 0, sizeof(*shadow));
+    shadow->fade = 1.0f;
 
     if (!config->enabled)
         return true;
@@ -579,7 +581,7 @@ shadow_sfx_update_geometry(shadow_nodes_t *shadow,
     int h = height + 2 * config->spread + 2 * radius;
     int x = config->offset_x - config->spread - radius;
     int y = config->offset_y - config->spread - radius;
-    float paint = shadow_paint(config);
+    float paint = shadow_paint(config) * shadow->fade;
 
     struct wlr_scene_shadow *sfx = shadow->sfx_shadow;
     wlr_scene_shadow_set_size(sfx, w, h);
@@ -688,15 +690,21 @@ shadow_update_config(shadow_nodes_t *shadow,
                     const shadow_config_t *config,
                     int width, int height)
 {
+    float fade;
+
     if (!shadow || !config)
         return;
 
     /* Destroy existing shadow and recreate with new config.
-     * Gradient textures are tiny so recreation is cheap. */
+     * Gradient textures are tiny so recreation is cheap. A config change
+     * mid-fade (e.g. focus flip) must not restore a full shadow; a struct
+     * that never rendered has no meaningful fade yet. */
+    fade = shadow->tree ? shadow->fade : 1.0f;
     shadow_destroy(shadow);
 
     if (config->enabled)
         shadow_create(parent, shadow, config, width, height);
+    shadow_set_fade(shadow, fade);
 }
 
 /* True when two resolved configs would render identical textures. Geometry
@@ -746,6 +754,33 @@ shadow_set_visible(shadow_nodes_t *shadow, bool visible)
     if (shadow->tree)
         wlr_scene_node_set_enabled(&shadow->tree->node,
             visible && shadow->size_ok);
+}
+
+void
+shadow_set_fade(shadow_nodes_t *shadow, float fade)
+{
+    if (!shadow)
+        return;
+    if (fade < 0.0f)
+        fade = 0.0f;
+    if (fade > 1.0f)
+        fade = 1.0f;
+    shadow->fade = fade;
+
+#ifdef HAVE_SCENEFX
+    if (shadow->sfx_shadow) {
+        float paint = shadow_paint(&shadow->config) * fade;
+        float color[4] = { shadow->config.color[0],
+                           shadow->config.color[1],
+                           shadow->config.color[2], paint };
+        wlr_scene_shadow_set_color(shadow->sfx_shadow, color);
+        return;
+    }
+#endif
+    /* Nine-patch: gradient textures carry their own alpha, attenuate the
+     * slice/fill buffers on top. */
+    if (shadow->tree)
+        scene_apply_opacity(&shadow->tree->node, fade);
 }
 
 void
