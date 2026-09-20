@@ -68,6 +68,14 @@ All notable changes to somewm will be documented in this file.
   `-Wstringop-truncation` no longer fail a Clang build under `-Werror`, and
   the code is warning-free on both compilers.
 
+- The Clang build now sets an explicit RUNPATH on `somewm`,
+  `somewm-client` and `liblgi_closure_guard.so`: linking with LLD bypasses
+  the nixpkgs binutils `ld` wrapper that normally injects the RUNPATH, which
+  left the binaries with an empty one and unable to find their shared
+  libraries at runtime (`error while loading shared libraries:
+  libwayland-server.so.0`). `package.nix` recreates the same rpath in
+  `postFixup` from the direct link dependencies.
+
 - Autocolor live mode no longer re-samples idle clients: once the compositor
   has delivered a `surface::commit`, the interval pump only runs for a client
   that is dirty or still within a small post-commit trailing budget (which

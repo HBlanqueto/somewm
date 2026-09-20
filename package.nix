@@ -21,6 +21,8 @@
   ninja,
   pam,
   pango,
+  patchelf,
+  pixman,
   pkg-config,
   scenefx,
   wayland,
@@ -88,6 +90,7 @@ toolchain.mkDerivation {
     makeWrapper
     meson
     ninja
+    patchelf
     pkg-config
     wayland-scanner
   ]
@@ -163,6 +166,35 @@ toolchain.mkDerivation {
       ++ lib.optional gtk3Support gtk3.out
       ++ extraGIPackages;
       giTypelibPath = lib.strings.concatMapStringsSep ":" (p: "${p}/lib/girepository-1.0") giPackages;
+      # The Clang toolchain links with ld.lld (`-fuse-ld=lld`), which bypasses
+      # the nixpkgs binutils `ld` wrapper that normally injects RUNPATH into
+      # dynamically linked binaries. Without it, every binary in $out ships
+      # with an empty RUNPATH and fails to load its libraries at runtime.
+      # Recreate the same rpath explicitly: the lib dirs of the direct link
+      # dependencies (mirrors what the ld wrapper would compute).
+      rpath = lib.makeLibraryPath (
+        [
+          cairo
+          dbus
+          gdk-pixbuf
+          glib.out
+          harfbuzz.out
+          libinput.out
+          librsvg.out
+          libxkbcommon
+          luajit
+          pam.out
+          pango.out
+          wayland
+          scenefx_0_5
+          wlroots_0_20
+          libxcb
+          libxcb-wm
+          libxcb-util
+          pixman
+        ]
+        ++ lib.optionals gtk3Support [ gtk3.out ]
+      );
     in
     ''
       wrapProgram $out/bin/somewm \
@@ -170,6 +202,11 @@ toolchain.mkDerivation {
         --prefix LUA_PATH : "${luaEnv}/share/lua/${luaEnv.luaversion}/?.lua;${luaEnv}/share/lua/${luaEnv.luaversion}/?/init.lua" \
         --prefix LUA_CPATH : "${luaEnv}/lib/lua/${luaEnv.luaversion}/?.so" \
         --set GDK_PIXBUF_MODULE_FILE "${librsvg.out}/lib/gdk-pixbuf-2.0/2.10.0/loaders.cache"
+      for bin in "$out/bin/.somewm-wrapped" "$out/bin/somewm-client" "$out/lib/liblgi_closure_guard.so"; do
+        if [ -e "$bin" ]; then
+          patchelf --set-rpath "${rpath}" "$bin"
+        fi
+      done
     '';
 
   passthru.providedSessions = [ "somewm" ];
