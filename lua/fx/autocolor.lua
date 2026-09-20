@@ -11,16 +11,17 @@ the widgets and the render/foreground wiring.
       - `live` re-samples on the client's own surface commits. The compositor
         emits a per-client `surface::commit` signal (new hook in window.c, via
         the deferred event queue) so updates are EVENT-DRIVEN: idle clients do
-        no work, and UNFOCUSED clients keep updating. If a build predates the
-        hook (no such signal), the module falls back to interval polling so
-        live still works.
+        no work, and UNFOCUSED clients keep updating. Each commit also grants a
+        small trailing budget of pump samples so XWayland clients whose scene
+        snapshot is stale (e.g. focused Firefox tab switches) still converge.
+        If a build predates the hook (no such signal), the module falls back
+        to interval polling so live still works.
   * Exact color fidelity: the committed color is used exactly as sampled. No
     tint, no dimming, no desaturation. Focus distinction is the caller's
     concern (its own outline / focus colors) and/or the optional alpha, never
     by altering the sampled color.
-  * Anti-flicker: a candidate is committed only after `debounce` consecutive
-    agreeing samples and only when it differs from the committed color by more
-    than `autocolor_threshold` CIELAB deltaE.
+  * Anti-flicker: a candidate is committed only when it differs from the
+    committed color by more than `autocolor_threshold` CIELAB deltaE.
   * Readability: `M.foreground()` picks a light/dark color from WCAG-style
     linear luminance; the caller forwards it to its own text/widgets through
     the `fg_cb` callback.
@@ -42,7 +43,9 @@ Config chain (rule -> theme -> fallback), per-client read via `custom_ac_*`:
 Default mode is "off"; enable per client.
 
 Sampling cost: one `c.content` readback per poll on the main thread, bounded per
-client and gated by `autocolor_interval`. The compositor
+client and gated by `autocolor_interval`. Once a `surface::commit` has been
+observed, live clients are only sampled on commit (plus a small trailing
+budget); idle clients do no readback. The compositor
 readback path handles both SHM (zero-copy) and DMA-BUF/GPU (Firefox).
 ]]
 
@@ -56,6 +59,15 @@ local M = {}
 -- Per-client state (weak keys so closed clients are collected).
 local STATE = setmetatable({}, { __mode = "k" })
 local INITED = false
+
+-- Set once the compositor has delivered any `surface::commit` signal, proving
+-- this build has the hook. Until then the pump keeps its legacy every-interval
+-- polling so builds without the hook still track changes.
+local HOOK_SEEN = false
+
+-- Trailing samples granted per commit; covers snapshots that are stale when the
+-- commit-triggered sample runs (XWayland, e.g. focused Firefox tab switches).
+local TRAILING_BUDGET = 2
 
 local RETRY_DELAY = 1.0
 
@@ -404,11 +416,24 @@ local schedule = function(c, st)
 end
 
 local function on_commit(c)
+    HOOK_SEEN = true
     local st = STATE[c]
     if not st or st.mode ~= "live" then return end
     st.commit_seen = true
+    st.budget = TRAILING_BUDGET
     st.dirty = true
     schedule(c, st)
+end
+
+-- Pure pump decision. `hook_seen` is false until the compositor has delivered
+-- any `surface::commit` (legacy builds without the hook never fire it), so the
+-- pump keeps its old every-interval polling there. Once the hook is live,
+-- sample only when the client is dirty or still within its post-commit
+-- trailing budget; idle clients do no readback.
+function M._pump_should_poll(st, hook_seen)
+    if not hook_seen then return true end
+    if st.dirty then return true end
+    return (st.budget or 0) > 0
 end
 
 local function connect_surface(c, st)
@@ -443,14 +468,21 @@ local function ensure_sampling(c, st)
 
     connect_surface(c, st)
 
-    -- Pump. Always samples each interval so XWayland clients whose scene
-    -- snapshot goes stale (focused Firefox tab switches) still track changes;
-    -- the commit hook supplies extra immediacy on top for native clients.
-    -- Independent of focus: a mapped client always updates its own titlebar.
+    -- Pump. Once any `surface::commit` has been seen (HOOK_SEEN), sampling is
+    -- event-driven: the pump only runs for a client that is dirty (a commit
+    -- latched) or still within its post-commit trailing budget, which covers
+    -- XWayland clients whose scene snapshot is stale (focused Firefox tab
+    -- switches) until it converges. Builds without the hook never set HOOK_SEEN,
+    -- so the pump keeps its legacy every-interval polling. Independent of
+    -- focus: a mapped client always updates its own titlebar.
     local t = gears.timer { timeout = st.cfg.interval }
     t:connect_signal("timeout", function()
         if not c.valid then t:stop(); return end
         if st.dirty and not gate_ok(st) then return end
+        if not M._pump_should_poll(st, HOOK_SEEN) then return end
+        -- A budget-driven (trailing) sample consumes one unit of the budget;
+        -- dirty samples are the commit response and leave the budget intact.
+        if not st.dirty and st.budget > 0 then st.budget = st.budget - 1 end
         poll(c, st)
     end)
     t:start()
@@ -470,6 +502,7 @@ function M._ensure(c)
             live_t = nil, sig = nil,
             started = false, scheduled = false,
             commit_seen = false,
+            budget = 0,
             dirty = false, last_attempt = nil,
             color = nil,
         }

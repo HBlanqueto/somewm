@@ -31,3 +31,30 @@ describe("fx.autocolor.foreground", function()
         assert.is.same("#f2f2f2", autocolor.foreground("#181818"))
     end)
 end)
+
+describe("fx.autocolor._pump_should_poll", function()
+    it("polls every interval until the commit hook has been seen", function()
+        -- Legacy builds never fire `surface::commit`: the pump keeps its
+        -- old every-interval polling, regardless of client state.
+        assert.is_true(autocolor._pump_should_poll({ dirty = false, budget = 0 }, false))
+        assert.is_true(autocolor._pump_should_poll({ dirty = false, budget = 2 }, false))
+    end)
+
+    it("skips an idle client once the hook is live", function()
+        -- No commit since the last sample and no trailing budget left: the
+        -- content has not changed, so there is nothing to re-sample.
+        assert.is_false(autocolor._pump_should_poll({ dirty = false, budget = 0 }, true))
+    end)
+
+    it("samples a dirty client", function()
+        -- A commit latched `st.dirty`: content changed, re-sample.
+        assert.is_true(autocolor._pump_should_poll({ dirty = true, budget = 0 }, true))
+        assert.is_true(autocolor._pump_should_poll({ dirty = true, budget = 2 }, true))
+    end)
+
+    it("samples while the post-commit trailing budget remains", function()
+        -- Stale-snapshot convergence (XWayland): budget-driven trailing samples.
+        assert.is_true(autocolor._pump_should_poll({ dirty = false, budget = 1 }, true))
+        assert.is_true(autocolor._pump_should_poll({ dirty = false, budget = 2 }, true))
+    end)
+end)

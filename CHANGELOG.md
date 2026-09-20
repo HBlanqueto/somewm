@@ -45,6 +45,14 @@ All notable changes to somewm will be documented in this file.
   focused surface, mousegrabber state). Off by default and zero-cost when
   unset; see `docs/debugging.md`
 
+### Changed
+
+- Autocolor live mode no longer re-samples idle clients: once the compositor
+  has delivered a `surface::commit`, the interval pump only runs for a client
+  that is dirty or still within a small post-commit trailing budget (which
+  covers stale XWayland snapshots). Builds without the commit hook keep
+  interval polling. Idle clients do no readback.
+
 ### Fixed
 
 - A client with per-corner rounded corners no longer keeps its bottom-left
