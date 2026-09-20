@@ -176,6 +176,10 @@ struct client_t
     rounded_config_t *rounded_config;
     /** Rounded corner scene nodes (unused for clients: they use true crop) */
     rounded_nodes_t rounded;
+    /** Backdrop blur configuration (NULL = blur off) */
+    blur_config_t *blur_config;
+    /** Backdrop blur scene nodes (SceneFX only) */
+    blur_nodes_t blur;
     /** True rounded-corner crop state (content, titlebars, border ring) */
     rounded_crop_t crop;
     /** Per-buffer rounded copies for child (sub)surfaces in the client tree.

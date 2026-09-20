@@ -108,6 +108,8 @@
 #include "../event.h"
 #include "../shadow.h"
 #include "../rounded.h"
+#include "../blur.h"
+#include "../window.h"
 #include "objects/spawn.h"
 #include "../property.h"
 #include "../screenshot_compose.h"
@@ -1639,6 +1641,15 @@ client_wipe(client_t *c)
         c->rounded_config = NULL;
     }
 
+    /* Backdrop blur: node is a child of c->scene (released in
+     * client_scene_node_destroy before the tree goes); free the config
+     * here with the rest of the client state. */
+    blur_release(&c->blur);
+    if (c->blur_config) {
+        free(c->blur_config);
+        c->blur_config = NULL;
+    }
+
     p_delete(&c->machine);
     p_delete(&c->class);
     p_delete(&c->instance);
@@ -3065,6 +3076,7 @@ client_set_fullscreen(lua_State *L, int cidx, bool s)
             wlr_foreign_toplevel_handle_v1_set_fullscreen(c->toplevel_handle, s);
         /* Force a client resize, so that titlebars get shown/hidden */
         client_resize_do(c, c->geometry, false);
+        client_blur_update(c);
         stack_windows();
     }
 }
@@ -4656,6 +4668,51 @@ luaA_client_set_corner_radius(lua_State *L, client_t *c)
     return 0;
 }
 
+/** Get client backdrop blur configuration.
+ * \param L The Lua VM state.
+ * \param c The client.
+ * \return Number of elements pushed on stack.
+ */
+static int
+luaA_client_get_backdrop_blur(lua_State *L, client_t *c)
+{
+    if (c->blur_config) {
+        blur_config_to_lua(L, c->blur_config);
+    } else {
+        lua_pushboolean(L, false);
+    }
+    return 1;
+}
+
+/** Set client backdrop blur configuration.
+ * \param L The Lua VM state.
+ * \param c The client.
+ * \return Number of elements pushed on stack.
+ */
+static int
+luaA_client_set_backdrop_blur(lua_State *L, client_t *c)
+{
+    blur_config_t new_config;
+
+    if (!blur_config_from_lua(L, -1, &new_config)) {
+        return luaL_error(L, "%s", lua_tostring(L, -1));
+    }
+
+    /* Allocate or update config */
+    if (!c->blur_config) {
+        c->blur_config = malloc(sizeof(blur_config_t));
+        if (!c->blur_config)
+            return luaL_error(L, "out of memory");
+    }
+    *c->blur_config = new_config;
+
+    /* Update blur if client is mapped */
+    client_blur_update(c);
+
+    luaA_object_emit_signal(L, -3, "property::backdrop_blur", 0);
+    return 0;
+}
+
 static int
 luaA_client_set_skip_taskbar(lua_State *L, client_t *c)
 {
@@ -5513,6 +5570,7 @@ client_class_setup(lua_State *L)
         { "screen", NULL, (lua_class_propfunc_t) luaA_client_get_screen, (lua_class_propfunc_t) luaA_client_set_screen },
         { "shadow", (lua_class_propfunc_t) luaA_client_set_shadow, (lua_class_propfunc_t) luaA_client_get_shadow, (lua_class_propfunc_t) luaA_client_set_shadow },
         { "corner_radius", (lua_class_propfunc_t) luaA_client_set_corner_radius, (lua_class_propfunc_t) luaA_client_get_corner_radius, (lua_class_propfunc_t) luaA_client_set_corner_radius },
+        { "backdrop_blur", (lua_class_propfunc_t) luaA_client_set_backdrop_blur, (lua_class_propfunc_t) luaA_client_get_backdrop_blur, (lua_class_propfunc_t) luaA_client_set_backdrop_blur },
         { "shape_bounding", (lua_class_propfunc_t) luaA_client_set_shape_bounding, (lua_class_propfunc_t) luaA_client_get_shape_bounding, (lua_class_propfunc_t) luaA_client_set_shape_bounding },
         { "shape_clip", (lua_class_propfunc_t) luaA_client_set_shape_clip, (lua_class_propfunc_t) luaA_client_get_shape_clip, (lua_class_propfunc_t) luaA_client_set_shape_clip },
         { "shape_input", (lua_class_propfunc_t) luaA_client_set_shape_input, (lua_class_propfunc_t) luaA_client_get_shape_input, (lua_class_propfunc_t) luaA_client_set_shape_input },

@@ -51,4 +51,9 @@ void client_scenefx_update_border(Client *c, int frame_w, int frame_h);
 void layer_surface_scenefx_apply_radii(LayerSurface *l);
 #endif
 
+/* SceneFX backdrop blur (scene access is stubbed in a -Dscenefx=disabled
+ * build, so these are safe to call unconditionally). */
+void client_blur_update(Client *c);
+void layer_surface_blur_update(LayerSurface *l);
+
 #endif /* WINDOW_H */

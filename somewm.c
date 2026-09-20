@@ -126,6 +126,7 @@
 #include "ewmh.h"            /* EWMH support for XWayland */
 #include "property.h"         /* Property system for Wayland and XWayland */
 #include "shadow.h"          /* Compositor-level shadow support */
+#include "blur.h"            /* Compositor-level backdrop blur support */
 #include "ipc.h"
 #include "dbus.h"
 
@@ -1504,6 +1505,7 @@ commitlayersurfacenotify(struct wl_listener *listener, void *data)
 		l->layer_surface->current = l->layer_surface->pending;
 		arrangelayers(l->mon);
 		l->layer_surface->current = old_state;
+		layer_surface_blur_update(l);
 		return;
 	}
 
@@ -1561,6 +1563,11 @@ commitlayersurfacenotify(struct wl_listener *listener, void *data)
 
 		lua_pop(L, 1);
 	}
+
+	/* Backdrop blur re-links its mask and re-fits box/radii on every commit
+	 * (cheap: setters no-op when nothing changed). Covers initial commit,
+	 * re-map and size/layer changes. */
+	layer_surface_blur_update(l);
 }
 
 /* Handle initial XDG commit - sets scale, capabilities, size.
@@ -3517,7 +3524,9 @@ destroylayersurfacenotify(struct wl_listener *listener, void *data)
 	wl_list_remove(&l->surface_commit.link);
 	wl_list_remove(&l->crop_commit.link);
 	layer_surface_crop_release(l);
+	blur_release(&l->blur);
 	free(l->rounded_config);
+	free(l->blur_config);
 	wlr_scene_node_destroy(&l->scene->node);
 	wlr_scene_node_destroy(&l->popups->node);
 	free(l);
@@ -3729,6 +3738,9 @@ client_scene_node_destroy(Client* c) {
 		struct wlr_surface *surface = client_surface(c);
 		surface_clear_scene_data(surface, c->popups);
 	}
+	/* The blur node is a child of c->scene; release it first so it is not
+	 * double-destroyed with the tree. */
+	blur_release(&c->blur);
 	/* c->popups and c->scene_surface are both descendants of c->scene,
 	 * destroyed recursively along with it. */
 	wlr_scene_node_destroy(&c->scene->node);
@@ -6354,6 +6366,10 @@ apply_geometry_to_wlroots(Client *c)
 	if (c->crop.applied || client_crop_active(c))
 		client_crop_apply(c);
 #endif
+
+	/* Backdrop blur box/radii follow geometry, fullscreen and border state;
+	 * commit-time mask re-linking lives in cropcommitnotify(). */
+	client_blur_update(c);
 }
 
 void
@@ -7193,6 +7209,8 @@ setup(void)
 		layers[i] = wlr_scene_tree_create(&scene->tree);
 	drag_icon = wlr_scene_tree_create(&scene->tree);
 	wlr_scene_node_place_below(&drag_icon->node, &layers[LyrBlock]->node);
+	/* Default SceneFX blur device parameters (overridable from Lua). */
+	blur_setup_defaults(scene);
 
 	/* Autocreates a renderer, either Pixman, GLES2 or Vulkan for us. The user
 	 * can also specify a renderer using the WLR_RENDERER env var.
@@ -7726,6 +7744,7 @@ unmaplayersurfacenotify(struct wl_listener *listener, void *data)
 	LayerSurface *l = wl_container_of(listener, l, unmap);
 
 	l->mapped = 0;
+	blur_release(&l->blur);
 	wlr_scene_node_set_enabled(&l->scene->node, 0);
 	if (l == exclusive_focus)
 		exclusive_focus = NULL;

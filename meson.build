@@ -483,6 +483,7 @@ somewm_sources = [
   'xkb.c',
   'systray.c',
   'shadow.c',
+  'blur.c',
   'strut.c',
   'property.c',
   'dbus.c',

@@ -6,6 +6,14 @@ All notable changes to somewm will be documented in this file.
 
 ### Added
 
+- Opt-in compositor backdrop blur behind `client.backdrop_blur` and
+  `layer_surface.backdrop_blur` (a SceneFX build; no-op without it). The
+  `wlr_scene_blur` node follows the object's box and corner radii, uses the
+  content buffer as its transparency mask and switches off while a client is
+  fullscreen. Global device parameters are set with
+  `awesome.set_blur_data(num_passes, radius, noise, brightness, contrast,
+  saturation)`.
+
 - Shadows follow the window's rounded corners: they adopt the object's
   effective per-corner radii (`follow_corners`, on by default), and
   `shadow.corner_radius` accepts a per-corner table

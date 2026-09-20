@@ -43,6 +43,7 @@
 #include "dbus.h"
 #include "shadow.h"
 #include "rounded.h"
+#include "blur.h"
 #include "window.h"
 #include "pam_auth.h"
 
@@ -1646,6 +1647,34 @@ luaA_awesome_scenefx_info(lua_State *L)
 		lua_setfield(L, -2, "border_frame");
 
 		lua_newtable(L);
+		struct wlr_scene_blur *blur = c->blur.node;
+		if (blur) {
+			lua_pushinteger(L, blur->node.enabled ? 1 : 0);
+			lua_setfield(L, -2, "visible");
+			lua_pushinteger(L, blur->node.x);
+			lua_setfield(L, -2, "x");
+			lua_pushinteger(L, blur->node.y);
+			lua_setfield(L, -2, "y");
+			lua_pushinteger(L, blur->width);
+			lua_setfield(L, -2, "width");
+			lua_pushinteger(L, blur->height);
+			lua_setfield(L, -2, "height");
+			lua_pushnumber(L, blur->alpha);
+			lua_setfield(L, -2, "alpha");
+			lua_pushnumber(L, blur->strength);
+			lua_setfield(L, -2, "strength");
+			lua_pushboolean(L,
+				wlr_scene_blur_get_transparency_mask_source(blur) != NULL);
+			lua_setfield(L, -2, "has_mask");
+			scenefx_push_radii(L, blur->corners);
+			lua_setfield(L, -2, "corners");
+		} else {
+			lua_pushboolean(L, false);
+			lua_setfield(L, -2, "visible");
+		}
+		lua_setfield(L, -2, "blur");
+
+		lua_newtable(L);
 		struct wlr_scene_shadow *sfc = c->shadow.sfx_shadow;
 		if (sfc) {
 			lua_pushinteger(L, sfc->node.enabled ? 1 : 0);
@@ -1691,6 +1720,34 @@ luaA_awesome_scenefx_info(lua_State *L)
 			lua_pushnil(L);
 		}
 		lua_setfield(L, -2, "content");
+
+		lua_newtable(L);
+		struct wlr_scene_blur *blur = ls->ls->blur.node;
+		if (blur) {
+			lua_pushinteger(L, blur->node.enabled ? 1 : 0);
+			lua_setfield(L, -2, "visible");
+			lua_pushinteger(L, blur->node.x);
+			lua_setfield(L, -2, "x");
+			lua_pushinteger(L, blur->node.y);
+			lua_setfield(L, -2, "y");
+			lua_pushinteger(L, blur->width);
+			lua_setfield(L, -2, "width");
+			lua_pushinteger(L, blur->height);
+			lua_setfield(L, -2, "height");
+			lua_pushnumber(L, blur->alpha);
+			lua_setfield(L, -2, "alpha");
+			lua_pushnumber(L, blur->strength);
+			lua_setfield(L, -2, "strength");
+			lua_pushboolean(L,
+				wlr_scene_blur_get_transparency_mask_source(blur) != NULL);
+			lua_setfield(L, -2, "has_mask");
+			scenefx_push_radii(L, blur->corners);
+			lua_setfield(L, -2, "corners");
+		} else {
+			lua_pushboolean(L, false);
+			lua_setfield(L, -2, "visible");
+		}
+		lua_setfield(L, -2, "blur");
 		return 1;
 	}
 
@@ -2178,6 +2235,31 @@ luaA_awesome_clear_all_idle_timeouts(lua_State *L)
 	return 0;
 }
 
+/** awesome.set_blur_data(num_passes, radius, noise, brightness, contrast, saturation)
+ * Set the global SceneFX blur device parameters. No-op in a -Dscenefx=disabled
+ * build. Values are validated loosely: num_passes and radius must be
+ * non-negative integers.
+ */
+static int
+luaA_awesome_set_blur_data(lua_State *L)
+{
+	int num_passes = luaL_checkinteger(L, 1);
+	int radius = luaL_checkinteger(L, 2);
+	float noise = luaL_optnumber(L, 3, 0.1f);
+	float brightness = luaL_optnumber(L, 4, 1.0f);
+	float contrast = luaL_optnumber(L, 5, 1.0f);
+	float saturation = luaL_optnumber(L, 6, 1.0f);
+
+	if (num_passes < 0)
+		return luaL_error(L, "blur num_passes must be non-negative");
+	if (radius < 0)
+		return luaL_error(L, "blur radius must be non-negative");
+
+	blur_set_data(some_get_scene(), num_passes, radius, noise,
+		brightness, contrast, saturation);
+	return 0;
+}
+
 /** Internal DPMS wake function (no signal emission).
  * Wakes all monitors that are currently asleep.
  * Returns true if any monitor was woken.
@@ -2437,6 +2519,8 @@ const luaL_Reg awesome_methods[] = {
 	{ "clear_all_idle_timeouts", luaA_awesome_clear_all_idle_timeouts },
 	/* Animation API */
 	{ "start_animation", luaA_start_animation },
+	/* SceneFX blur parameters */
+	{ "set_blur_data", luaA_awesome_set_blur_data },
 	/* DPMS (display power management) API methods */
 	{ "dpms_off", luaA_awesome_dpms_off },
 	{ "dpms_on", luaA_awesome_dpms_on },

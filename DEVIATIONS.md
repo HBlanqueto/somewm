@@ -354,8 +354,11 @@ local surface = screen.primary.content
 | `client.id` | Unique compositor-assigned client ID |
 | `client.aspect_ratio` | Client aspect ratio hint |
 | `client.shadow` | Per-client shadow toggle |
+| `client.backdrop_blur` | Client backdrop blur (see Backdrop Blur below) |
 
 Wiboxes and drawins have a matching `shadow` property; wibars also read the `beautiful.wibar_shadow` theme variable.
+Layer surfaces have `layer_surface.backdrop_blur`. `client.corner_radius`
+and `layer_surface.corner_radius` are already listed elsewhere.
 
 ### Shadows
 
@@ -383,6 +386,46 @@ following the windows. Per-corner `shadow_corner_radius` values are honoured.
 Changed in 1.4.3: `clip_directional` no longer has an effect. The shadow
 is drawn at its offset and fades out on every side; sides fully covered
 by the window are simply not visible. Configs that set it still parse.
+
+In a SceneFX build the shadow is one `wlr_scene_shadow` node instead of the
+CPU nine-patch; `beautiful.shadow_*` and the per-object `shadow` tables drive
+it unchanged. SceneFX takes a single `corner_radius` for all corners, so the
+widest configured corner wins there; the per-corner radii from
+`follow_corners` / per-corner `shadow_corner_radius` are ignored in a
+SceneFX build (still honoured without SceneFX).
+
+### Backdrop Blur
+
+Opt-in compositor backdrop blur (no AwesomeWM equivalent; think the blurred
+wallpaper behind a translucent terminal). Configurable per object:
+
+| Property | Description |
+|----------|-------------|
+| `client.backdrop_blur` | Client backdrop blur toggle/config |
+| `layer_surface.backdrop_blur` | Layer-shell panel blur toggle/config |
+
+Accepted values:
+
+- `true` / `false` — blur on/off. On, the blur adopts the object's corner
+  radii (the same effective radii the corners use).
+- a table `{ corner_radius = N, alpha = A, strength = S }` — a uniform
+  radius override (default: the object's radii), plus the blur's alpha and
+  strength (both default 1.0).
+
+The blur is a `wlr_scene_blur` node under the object's content, same box and
+radii, with the content buffer as its transparency-mask source, so fully
+transparent pixels stay sharp. It is off while a client is fullscreen and is
+re-applied on every surface commit (wlroots detaches the mask link when a
+new buffer is attached). Global blur device parameters default to
+`num_passes = 2, radius = 5`, overridable once per session from Lua with
+`awesome.set_blur_data(num_passes, radius, noise, brightness, contrast,
+saturation)`.
+
+SceneFX-specific notes: only the plain blur node is used; the optimized
+blur path (`wlr_scene_optimized_blur`, `should_only_blur_bottom_layer`) is
+not enabled because it has no cache and would re-blur every frame. Layer
+surfaces only get blur via the property above — there is no automatic blur
+behind every panel.
 
 ### Inner Hairline (macOS-style inner border)
 

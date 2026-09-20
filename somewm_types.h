@@ -21,6 +21,8 @@
 #include <xkbcommon/xkbcommon.h>
 
 #include "rounded.h"
+#include "shadow.h"
+#include "blur.h"
 
 #ifdef XWAYLAND
 #include <wlr/xwayland.h>
@@ -162,6 +164,12 @@ typedef struct LayerSurface {
 	rounded_config_t *rounded_config;
 	rounded_crop_t crop;
 	struct wl_listener crop_commit;
+
+	/* Opt-in composer backdrop blur (SceneFX 0.5). NULL by default - blur
+	 * off. The Lua `backdrop_blur` property allocates the config and `blur`
+	 * holds the scene node. Re-applied on every surface commit. */
+	blur_config_t *blur_config;
+	blur_nodes_t blur;
 
 	/* Lua object reference (NULL if not managed by Lua) */
 	struct layer_surface_t *lua_object;

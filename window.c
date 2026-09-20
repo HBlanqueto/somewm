@@ -1115,6 +1115,11 @@ cropcommitnotify(struct wl_listener *listener, void *data)
 
 	c->crop.applied = false;
 	crop_schedule();
+
+	/* Backdrop blur re-links its transparency-mask source and re-rounds on
+	 * every commit, because wlroots detaches the mask link when the buffer
+	 * changes. Cheap: the blur setters no-op when nothing changed. */
+	client_blur_update(c);
 }
 
 /* ========== Layer-surface corner crop (opt-in) ==========
@@ -1528,7 +1533,9 @@ client_scenefx_update_border(Client *c, int frame_w, int frame_h)
 	wlr_scene_node_set_enabled(&c->border_frame->node, true);
 }
 
-/* Shader rounding for layer surfaces that opted in via `corner_radius`. */
+/* Round the layer surface's buffers with shader corner radii. Re-applied on
+ * every commit; the layer surface also carries a SceneFX blur node (below),
+ * which is separate from these buffer radii. */
 void
 layer_surface_scenefx_apply_radii(LayerSurface *l)
 {
@@ -1551,3 +1558,135 @@ layer_surface_scenefx_apply_radii(LayerSurface *l)
 }
 
 #endif /* HAVE_SCENEFX */
+
+/* ========== SceneFX backdrop blur ==========
+ *
+ * wlroots 0.4's wlr_scene_buffer_set_backdrop_blur() is gone in SceneFX 0.5:
+ * backdrop blur is now a scene node (wlr_scene_blur) that blurs everything
+ * painted behind it. The node tracks the object's content box and corner
+ * radii and takes the content buffer as a transparency-mask source, so the
+ * blur only shows where the surface actually paints (transparent pixels stay
+ * sharp). Re-applied on every surface commit because wlroots detaches the
+ * mask link and resets buffer state then. All scene access is inside blur.c
+ * (stubbed in a -Dscenefx=disabled build), so these drivers are build-safe.
+ */
+
+/* Content buffer serving as the blur's transparency mask. */
+static struct wlr_scene_buffer *
+blur_client_mask(Client *c)
+{
+	struct client_crop_find find = {
+		.surface = window_client_surface(c),
+	};
+	wlr_scene_node_for_each_buffer(&c->scene_surface->node,
+		client_crop_find_iter, &find);
+	return find.found;
+}
+
+static struct wlr_scene_buffer *
+blur_layer_mask(LayerSurface *l)
+{
+	struct layer_crop_find find = {
+		.surface = l->layer_surface->surface,
+	};
+	wlr_scene_node_for_each_buffer(&l->scene->node,
+		layer_crop_find_iter, &find);
+	return find.found;
+}
+
+/* Fit or destroy the client's blur node. The node lives inside c->scene at
+ * the content box (frame coordinates), rounded to the same corners as the
+ * content crop and masked by the content buffer. */
+void
+client_blur_update(Client *c)
+{
+	struct wlr_box area;
+	int inner_r[4];
+	int radii[4];
+	struct wlr_scene_buffer *mask;
+	int tl, tt;
+
+	if (!c->scene || !c->scene_surface || !window_client_has_surface(c))
+		return;
+
+	/* Off while fullscreen, unattached, or configured off. */
+	if (!c->blur_config || !c->blur_config->enabled || c->fullscreen
+			|| !window_client_surface(c)->mapped) {
+		blur_release(&c->blur);
+		return;
+	}
+
+	/* Content box in frame coordinates: inset by the border, offset by the
+	 * titlebars that occupy geometry (same derivation as the content
+	 * corner radii in client_scenefx_apply_radii). */
+	client_crop_inner_rect(c, &area, inner_r);
+	if (!client_crop_radii(c, radii)) {
+		inner_r[0] = inner_r[1] = inner_r[2] = inner_r[3] = 0;
+	}
+	tl = c->fullscreen ? 0 : c->titlebar[CLIENT_TITLEBAR_LEFT].size;
+	tt = c->fullscreen ? 0 : c->titlebar[CLIENT_TITLEBAR_TOP].size;
+	area.x += c->bw + tl;
+	area.y += c->bw + tt;
+
+	mask = blur_client_mask(c);
+	blur_apply(c->scene, &c->blur, c->blur_config, &area, inner_r, mask);
+
+	/* Blur the backdrop, then paint the surface on top, never over it.
+	 * The node has to sit below content in the frame tree. */
+#ifdef HAVE_SCENEFX
+	if (c->blur.node) {
+		wlr_scene_node_place_below(&c->blur.node->node,
+			&c->scene_surface->node);
+	}
+#endif
+}
+
+/* Fit or destroy a layer surface's blur node. */
+void
+layer_surface_blur_update(LayerSurface *l)
+{
+	const rounded_config_t *rconfig;
+	struct wlr_box area;
+	struct wlr_scene_buffer *mask;
+	int radii[4];
+	int i;
+
+	if (!l || !l->scene || !l->layer_surface)
+		return;
+	if (!l->blur_config || !l->blur_config->enabled || !l->mapped) {
+		blur_release(&l->blur);
+		return;
+	}
+
+	rconfig = l->rounded_config;
+	for (i = 0; i < 4; i++)
+		radii[i] = (rconfig && rconfig->enabled) ? rconfig->radii[i] : 0;
+	for (i = 0; i < 4; i++) {
+		if (radii[i] < 0)
+			radii[i] = 0;
+	}
+
+	/* Full surface box in node-local coordinates. */
+	area = (struct wlr_box){
+		.x = 0,
+		.y = 0,
+		.width = l->layer_surface->current.actual_width
+			? l->layer_surface->current.actual_width
+			: l->layer_surface->current.desired_width,
+		.height = l->layer_surface->current.actual_height
+			? l->layer_surface->current.actual_height
+			: l->layer_surface->current.desired_height,
+	};
+
+	mask = blur_layer_mask(l);
+	blur_apply(l->scene, &l->blur, l->blur_config, &area, radii, mask);
+
+	/* Blur the backdrop, then paint the surface on top: keep the node below
+	 * the layer's whole surface subtree. lower_to_bottom needs no sibling,
+	 * which is safer here: the mask buffer sits under intermediate trees. */
+#ifdef HAVE_SCENEFX
+	if (l->blur.node) {
+		wlr_scene_node_lower_to_bottom(&l->blur.node->node);
+	}
+#endif
+}

@@ -297,6 +297,53 @@ luaA_layer_surface_set_corner_radius(lua_State *L, layer_surface_t *ls)
 }
 
 /*
+ * backdrop_blur property getter/setter
+ *
+ * Opt-in compositor backdrop blur (SceneFX 0.5). False/nil (the default)
+ * keeps the surface sharp; `true` or a table { corner_radius, alpha,
+ * strength } blurs the backdrop behind it. On a SceneFX build the scene node
+ * is created on the next geometry/commit re-apply; without SceneFX the
+ * config is stored so the build behaves identically on recompile.
+ */
+
+static int
+luaA_layer_surface_get_backdrop_blur(lua_State *L, layer_surface_t *ls)
+{
+	if (ls->ls && ls->ls->blur_config) {
+		blur_config_to_lua(L, ls->ls->blur_config);
+	} else {
+		lua_pushboolean(L, false);
+	}
+	return 1;
+}
+
+static int
+luaA_layer_surface_set_backdrop_blur(lua_State *L, layer_surface_t *ls)
+{
+	blur_config_t new_config;
+
+	if (!ls->ls)
+		return luaL_error(L, "layer surface is gone");
+
+	if (!blur_config_from_lua(L, -1, &new_config)) {
+		return luaL_error(L, "%s", lua_tostring(L, -1));
+	}
+
+	if (!ls->ls->blur_config) {
+		ls->ls->blur_config = malloc(sizeof(blur_config_t));
+		if (!ls->ls->blur_config)
+			return luaL_error(L, "out of memory");
+	}
+	*ls->ls->blur_config = new_config;
+
+	/* Refit lazily - commit handler re-applies on the next surface commit. */
+	layer_surface_blur_update(ls->ls);
+
+	luaA_object_emit_signal(L, -3, "property::backdrop_blur", 0);
+	return 0;
+}
+
+/*
  * Class methods
  */
 
@@ -636,6 +683,7 @@ layer_surface_class_setup(lua_State *L)
 		{ "has_keyboard_focus", (lua_class_propfunc_t) luaA_layer_surface_set_has_keyboard_focus, (lua_class_propfunc_t) luaA_layer_surface_get_has_keyboard_focus, (lua_class_propfunc_t) luaA_layer_surface_set_has_keyboard_focus },
 		{ "focusable", NULL, (lua_class_propfunc_t) luaA_layer_surface_get_focusable, NULL },
 		{ "corner_radius", (lua_class_propfunc_t) luaA_layer_surface_set_corner_radius, (lua_class_propfunc_t) luaA_layer_surface_get_corner_radius, (lua_class_propfunc_t) luaA_layer_surface_set_corner_radius },
+		{ "backdrop_blur", (lua_class_propfunc_t) luaA_layer_surface_set_backdrop_blur, (lua_class_propfunc_t) luaA_layer_surface_get_backdrop_blur, (lua_class_propfunc_t) luaA_layer_surface_set_backdrop_blur },
 	};
 	luaA_class_add_properties(&layer_surface_class, properties, countof(properties));
 
