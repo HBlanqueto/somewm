@@ -74,6 +74,7 @@ run_headless() {
     cat > "$TEST_CONFIG_DIR/rc.lua" << 'RCEOF'
 local awful = require("awful")
 local gears = require("gears")
+require("awful.ipc")
 
 -- Minimal config for benchmarking
 awful.rules.rules = {
@@ -83,6 +84,16 @@ awful.rules.rules = {
 screen.connect_signal("request::desktop_decoration", function(s)
     awful.tag({ "1", "2", "3", "4", "5", "6", "7", "8", "9" }, s, awful.layout.suit.tile)
 end)
+
+-- Spawn a few terminal clients so the benches have windows to work with.
+-- Delayed until after startup so they map before the first benchmark run.
+gears.timer.start_new(1.0, function()
+    for _ = 1, 3 do
+        local ok = pcall(awful.spawn, "foot")
+        if not ok then pcall(awful.spawn, "wezterm") end
+    end
+    return false
+end)
 RCEOF
 
     export WLR_BACKENDS=headless
@@ -91,7 +102,9 @@ RCEOF
     export NO_AT_BRIDGE=1
     export XDG_RUNTIME_DIR="$TEST_RUNTIME_DIR"
     export XDG_CONFIG_HOME="$TMP_DIR/config"
-    export LUA_PATH="$ROOT_DIR/lua/?.lua;$ROOT_DIR/lua/?/init.lua;;"
+    # Keep any caller-provided LUA_PATH (e.g. a nix dev shell's lgi location);
+    # the trailing ${LUA_PATH:-;} appends the interpreter default when unset.
+    export LUA_PATH="$ROOT_DIR/lua/?.lua;$ROOT_DIR/lua/?/init.lua;${LUA_PATH:-;}"
 
     cleanup() {
         if [ -n "$SOMEWM_PID" ] && kill -0 "$SOMEWM_PID" 2>/dev/null; then
@@ -134,6 +147,14 @@ RCEOF
 
     echo "Compositor ready (PID $SOMEWM_PID)"
     echo ""
+
+    # Wait until the spawned clients are mapped so every bench has windows.
+    for i in $(seq 1 40); do
+        if "$SOMEWM_CLIENT" eval "return tostring(#client.get())" 2>/dev/null | grep -qE "^[3-9]"; then
+            break
+        fi
+        sleep 0.25
+    done
 
     # Run benchmarks
     for bench in "${BENCHMARKS[@]}"; do
