@@ -61,6 +61,13 @@ All notable changes to somewm will be documented in this file.
   covers stale XWayland snapshots). Builds without the commit hook keep
   interval polling. Idle clients do no readback.
 
+- Autocolor samples through `client:dominant_color()` instead of reading
+  `c.content` back through a temp PNG: the compositor composites only the
+  sampled strip and runs the C histogram on it, so a sample no longer
+  allocates and composites the whole client or walks a Lua per-pixel loop.
+  Compositor builds without the method keep the bound fallback color (one
+  warning per session)
+
 ### Fixed
 
 - A client with per-corner rounded corners no longer keeps its bottom-left
@@ -73,9 +80,12 @@ All notable changes to somewm will be documented in this file.
   widget actually provides it (clienticon draws the icon itself from the
   client)
 
-- Autocolor uses a NEAREST crop filter when downscaling the sampled strip, so
-  a bright glyph can't smear into the dominant-colour tally, and stays on the
-  dependency-free temp-PNG readback (`write_to_png` + `new_from_file`)
+- Autocolor's old cairo crop is gone with the temp-PNG readback. It was
+  broken by construction: `mode_from_surface` called `cr:scale` after
+  `set_source_surface`, but cairo locks the source matrix at set-source time,
+  so nothing scaled and `top` read only the left half of the first 12 rows
+  while `full` read only the top-left corner. The compositor-side sampler
+  composites the strip directly, so this cannot recur
 - The titlebar foreground now uses WCAG relative-luminance contrast instead of
   a flat luminance cutoff, and flips immediately with the committed colour
 
@@ -110,6 +120,10 @@ All notable changes to somewm will be documented in this file.
 
 - The autocolor fade animation: colors are committed instantly
   (`beautiful.autocolor_fade` / `custom_ac_fade` are no longer read)
+
+- Autocolor's temp-PNG / GdkPixbuf readback (`os.tmpname`,
+  `cairo.write_to_png`, `GdkPixbuf.Pixbuf.new_from_file`) and its Lua
+  per-pixel tally, replaced by the compositor-side `client:dominant_color()`
 
 ## [1.4.5] - 2026-09-01
 

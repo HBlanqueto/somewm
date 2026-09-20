@@ -42,17 +42,17 @@ Config chain (rule -> theme -> fallback), per-client read via `custom_ac_*`:
   "white" fg that `M.foreground()` derives (default #f2f2f2).
 Default mode is "off"; enable per client.
 
-Sampling cost: one `c.content` readback per poll on the main thread, bounded per
-client and gated by `autocolor_interval`. Once a `surface::commit` has been
-observed, live clients are only sampled on commit (plus a small trailing
-budget); idle clients do no readback. The compositor
-readback path handles both SHM (zero-copy) and DMA-BUF/GPU (Firefox).
+Sampling cost: one `client:dominant_color()` call per sample on the main
+thread, bounded per client and gated by `autocolor_interval`. The compositor
+composites only the sampled strip (top rows, or a thumb-sized step grid over
+the whole content for `region = "full"`) and runs a dependency-free C
+histogram on it; there is no temp PNG and no Lua per-pixel loop. Once a
+`surface::commit` has been observed, live clients are only sampled on commit
+(plus a small trailing budget); idle clients do no readback.
 ]]
 
 local gears = require("gears")
 local beautiful = require("beautiful")
-local lgi = require("lgi")
-local cairo = lgi.cairo
 
 local M = {}
 
@@ -70,6 +70,10 @@ local HOOK_SEEN = false
 local TRAILING_BUDGET = 2
 
 local RETRY_DELAY = 1.0
+
+-- (internal) unit-test seam: when set, cfg() returns this instead of reading
+-- the client / beautiful chain.
+local _cfg_override = nil
 
 -- ---------------------------------------------------------------------------
 -- Config
@@ -101,6 +105,7 @@ function M.is_active(c)
 end
 
 local function cfg(c)
+    if _cfg_override then return _cfg_override end
     return {
         mode         = M.mode(c),
         interval     = tonumber(opt(c, "interval", "autocolor_interval", 1)) or 1,
@@ -223,111 +228,66 @@ function M.color_of(c)
 end
 
 -- ---------------------------------------------------------------------------
--- Extraction (dominant color of c.content)
+-- Extraction (dominant color of the client content)
 -- ---------------------------------------------------------------------------
 
-local function mode_from_surface(surf, src_w, src_h, c, r)
-    local f = cfg(c)
-    local sample_w, sample_h
-    if f.region == "top" then
-        sample_w = math.max(1, math.min(math.floor(src_w / 2), src_w))
-        sample_h = math.max(1, math.min(12, src_h))
-    else
-        local s = f.thumb / math.max(src_w, src_h, 1)
-        sample_w = math.max(1, math.floor(src_w * s))
-        sample_h = math.max(1, math.floor(src_h * s))
-    end
+-- Warn once per session when the running compositor build predates the
+-- `client:dominant_color()` method (an older compositor). The bound fallback
+-- color is kept and sampling is disabled.
+local WARNED_MISSING = false
 
-    local ok_crop, crop = pcall(function()
-        local cs = cairo.ImageSurface(cairo.Format.ARGB32, sample_w, sample_h)
-        local cr = cairo.Context(cs)
-        -- Nearest neighbor: bilinear would blend a dark glyph with the light
-        -- bar around it and skew the dominant-color tally; nearest keeps the
-        -- per-pixel colors that this module balances.
-        cr:set_source_surface(surf, 0, 0)
-        local pat = cr:get_source()
-        if pat and pat.set_filter then pat:set_filter(cairo.Filter.NEAREST) end
-        cr:scale(sample_w / src_w, sample_h / src_h)
-        cr:paint()
-        return cs
-    end)
-    if not ok_crop or not crop then return nil end
-
-    -- Readback: write the cairo thumb to a temp PNG and decode it with
-    -- GdkPixbuf so the pixels can be tallied. GdkPixbuf is loaded lazily,
-    -- which keeps the early display-connection risk out of this path.
-    local tmp = os.tmpname()
-    local ok_w = pcall(function() crop:write_to_png(tmp) end)
-    if not ok_w then os.remove(tmp); return nil end
-
-    local ok_g, GdkPixbuf = pcall(lgi.require, "GdkPixbuf", "2.0")
-    if not ok_g then os.remove(tmp); return nil end
-
-    local ok_p, pixbuf = pcall(function() return GdkPixbuf.Pixbuf.new_from_file(tmp) end)
-    os.remove(tmp)
-    if not ok_p or not pixbuf then return nil end
-
-    local ok_px, px = pcall(function() return pixbuf:get_pixels() end)
-    local ok_st, stride = pcall(function() return pixbuf:get_rowstride() end)
-    local ok_nc, nch = pcall(function() return pixbuf:get_n_channels() end)
-    if not ok_px or type(px) ~= "string" or not ok_st or not ok_nc or stride < 1 or nch < 3 then
-        return nil
-    end
-
-    -- ROI mapped into thumbnail coordinates (nil r = whole thumbnail).
-    local x0, x1, y0, y1 = 0, sample_w, 0, sample_h
-    if r then
-        x0 = math.max(0, math.floor(r.x * sample_w / src_w))
-        x1 = math.min(sample_w, math.ceil((r.x + r.w) * sample_w / src_w))
-        y0 = math.max(0, math.floor(r.y * sample_h / src_h))
-        y1 = math.min(sample_h, math.ceil((r.y + r.h) * sample_h / src_h))
-    end
-
-    local tally, mode, mode_count, total, checked = {}, nil, 0, 0, 0
-    for x = x0, x1 - 1, 2 do
-        for y = y0, y1 - 1 do
-            local off = y * stride + x * nch
-            checked = checked + 1
-            local r_, g_, b_ = px:byte(off + 1, off + 3)
-            -- Skip transparent pixels. A `c.content` snapshot whose buffers
-            -- were absent during a rapid scene reorder composites nothing and
-            -- comes back fully transparent (ARGB 0x00000000); sampling RGB
-            -- alone would read that as a "black" dominant and flip the bar
-            -- black. Transparent pixels carry no visible color, so they must
-            -- not vote.
-            local a_ = nch >= 4 and px:byte(off + 4) or 255
-            if r_ and g_ and b_ and a_ and a_ >= 32 then
-                local color = ("#%02x%02x%02x"):format(r_, g_, b_)
-                total = total + 1
-                local n = (tally[color] or 0) + 1
-                tally[color] = n
-                if n > mode_count then mode, mode_count = color, n end
-            end
-        end
-    end
-    -- An empty or mostly-transparent snapshot carries no usable color, same
-    -- fallback contract as a failed readback.
-    if checked == 0 or total < f.min_share * checked then return nil end
-    return mode, mode_count / total
-end
-
--- Cheap path: `c.content` (client scene subtree, content minus decorations).
--- Cost is O(window pixels) for the readback; fine at a bounded cadence.
-local function extract(c)
-    local ok_c, content = pcall(function() return c.content end)
-    if not ok_c or not content then return nil end
-    local ok_s, s = pcall(gears.surface, content)
-    if not ok_s then return nil end
-    local ok_w, w = pcall(function() return s:get_width() end)
-    local ok_h, h = pcall(function() return s:get_height() end)
-    if not (ok_w and ok_h) or type(w) ~= "number" or type(h) ~= "number" or w < 1 or h < 1 then
-        return nil
-    end
-    return mode_from_surface(s, w, h, c)
-end
-
+-- Sample the dominant color of a client's content. Returns hex, share, or
+-- nothing. The heavy lifting runs inside the compositor:
+--   * top   -> the top 12 rows across the full width
+--   * full  -> the whole content, stepped so roughly thumb x thumb pixels
+--              vote (the compositor derives the steps from the content size)
+--   * min_share is applied here exactly as before: an ambiguous histogram
+--              keeps the current color.
 local function sample(c, _st)
-    return pcall(extract, c)
+    return pcall(function()
+        local f = cfg(c)
+        if not c.dominant_color then
+            if not WARNED_MISSING then
+                WARNED_MISSING = true
+                gears.debug.print_warning(
+                    "[autocolor] compositor lacks client:dominant_color(); " ..
+                    "keeping the fallback color for all clients")
+            end
+            return nil
+        end
+        local opts = {
+            rows = f.region == "top" and 12 or 0,
+            bits = 4,
+            min_alpha = 32,
+        }
+        if f.region == "full" then
+            -- thumb is an approximate sample-grid size: roughly thumb x thumb
+            -- pixels vote. The compositor picks step_x/step_y from the content
+            -- size and thumb.
+            opts.thumb = f.thumb
+        end
+        local hex, share = c:dominant_color(opts)
+        if not hex or not share then return nil end
+        if share < f.min_share then return nil end
+        return hex, share
+    end)
+end
+
+-- (internal) unit-test seam: run the sample logic with an explicit config so
+-- the top/full -> options mapping and min_share gating are testable without a
+-- real client.
+function M._sample_for_tests(c, f)
+    local prev_cfg = _cfg_override
+    _cfg_override = f
+    local ok, hex, share = sample(c, nil)
+    _cfg_override = prev_cfg
+    if not ok then return nil, nil end
+    return hex, share
+end
+
+-- (internal) unit-test seam: clear the once-per-session missing-method warning.
+function M._reset_warning_for_tests()
+    WARNED_MISSING = false
 end
 
 -- ---------------------------------------------------------------------------
