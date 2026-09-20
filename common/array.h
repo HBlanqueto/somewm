@@ -56,32 +56,32 @@
 
 /** Common array functions */
 #define ARRAY_COMMON_FUNCS(type_t, pfx, dtor)                               \
-    static inline pfx##_array_t * pfx##_array_new(void) {                   \
+    static inline MAYBE_UNUSED pfx##_array_t * pfx##_array_new(void) {      \
         return p_new(pfx##_array_t, 1);                                     \
     }                                                                       \
-    static inline void pfx##_array_init(pfx##_array_t *arr) {               \
+    static inline MAYBE_UNUSED void pfx##_array_init(pfx##_array_t *arr) {  \
         p_clear(arr, 1);                                                    \
     }                                                                       \
-    static inline void pfx##_array_wipe(pfx##_array_t *arr) {               \
+    static inline MAYBE_UNUSED void pfx##_array_wipe(pfx##_array_t *arr) {  \
         for (int i = 0; i < arr->len; i++) {                                \
             dtor(&arr->tab[i]);                                             \
         }                                                                   \
         p_delete(&arr->tab);                                                \
     }                                                                       \
-    static inline void pfx##_array_delete(pfx##_array_t **arrp) {           \
+    static inline MAYBE_UNUSED void pfx##_array_delete(pfx##_array_t **arrp) { \
         if (*arrp) {                                                        \
             pfx##_array_wipe(*arrp);                                        \
             p_delete(arrp);                                                 \
         }                                                                   \
     }                                                                       \
                                                                             \
-    static inline void pfx##_array_grow(pfx##_array_t *arr, int newlen) {   \
+    static inline MAYBE_UNUSED void pfx##_array_grow(pfx##_array_t *arr, int newlen) { \
         p_grow(&arr->tab, newlen, &arr->size);                              \
     }                                                                       \
-    static inline void pfx##_array_growx(pfx##_array_t *arr, int newlen) {  \
+    static inline MAYBE_UNUSED void pfx##_array_growx(pfx##_array_t *arr, int newlen) { \
         p_growx(&arr->tab, newlen, &arr->size);                             \
     }                                                                       \
-    static inline void                                                      \
+    static inline MAYBE_UNUSED void                                        \
     pfx##_array_splice(pfx##_array_t *arr, int pos, int len,                \
                        type_t items[], int count)                           \
     {                                                                       \
@@ -97,16 +97,16 @@
         if (items && count > 0)                                             \
             memcpy(arr->tab + pos, items, count * sizeof(*items));              \
     }                                                                       \
-    static inline type_t pfx##_array_take(pfx##_array_t *arr, int pos) {    \
+    static inline MAYBE_UNUSED type_t pfx##_array_take(pfx##_array_t *arr, int pos) { \
         type_t res = arr->tab[pos];                                         \
         pfx##_array_splice(arr, pos, 1, NULL, 0);                           \
         return res;                                                         \
     }                                                                       \
-    static inline int pfx##_array_indexof(pfx##_array_t *arr, type_t *e)    \
+    static inline MAYBE_UNUSED int pfx##_array_indexof(pfx##_array_t *arr, type_t *e) \
     {                                                                       \
         return e - arr->tab;                                                \
     }                                                                       \
-    static inline type_t pfx##_array_remove(pfx##_array_t *arr, type_t *e)  \
+    static inline MAYBE_UNUSED type_t pfx##_array_remove(pfx##_array_t *arr, type_t *e) \
     {                                                                       \
         return pfx##_array_take(arr, pfx##_array_indexof(arr, e));          \
     }
@@ -114,12 +114,12 @@
 /** Non-ordered array functions */
 #define ARRAY_FUNCS(type_t, pfx, dtor)                                      \
     ARRAY_COMMON_FUNCS(type_t, pfx, dtor)                                   \
-    static inline void                                                      \
+    static inline MAYBE_UNUSED void                                        \
     pfx##_array_push(pfx##_array_t *arr, type_t e)                          \
     {                                                                       \
         pfx##_array_splice(arr, 0, 0, &e, 1);                               \
     }                                                                       \
-    static inline void pfx##_array_append(pfx##_array_t *arr, type_t e) {   \
+    static inline MAYBE_UNUSED void pfx##_array_append(pfx##_array_t *arr, type_t e) { \
         pfx##_array_grow(arr, arr->len + 1);                                \
         arr->tab[arr->len] = e;                                             \
         arr->len++;                                                         \
@@ -128,7 +128,7 @@
 /** Binary ordered array functions */
 #define BARRAY_FUNCS(type_t, pfx, dtor, cmp)                                \
     ARRAY_COMMON_FUNCS(type_t, pfx, dtor)                                   \
-    static inline void                                                      \
+    static inline MAYBE_UNUSED void                                        \
     pfx##_array_insert(pfx##_array_t *arr, type_t e)                        \
     {                                                                       \
         int l = 0, r = arr->len;                                            \
@@ -145,7 +145,7 @@
         }                                                                   \
         pfx##_array_splice(arr, r, 0, &e, 1);                               \
     }                                                                       \
-    static inline void                                                      \
+    static inline MAYBE_UNUSED void                                        \
     pfx##_array_inserts(pfx##_array_t *arr, const type_t items[], int count)\
     {                                                                       \
         pfx##_array_growx(arr, arr->len + count);                           \
@@ -153,7 +153,7 @@
         arr->len += count;                                                  \
         qsort(arr->tab, arr->len, sizeof(*items), cmp);                    \
     }                                                                       \
-    static inline type_t *                                                  \
+    static inline MAYBE_UNUSED type_t *                                    \
     pfx##_array_lookup(pfx##_array_t *arr, type_t *e)                       \
     {                                                                       \
         if (!arr->tab || arr->len == 0)                                     \

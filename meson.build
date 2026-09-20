@@ -452,14 +452,20 @@ if get_option('bench')
   add_project_arguments('-DSOMEWM_BENCH', language: 'c')
 endif
 
-# Development flags
-add_project_arguments(
+# Development flags. The GCC-only flags (stringop/format truncation) are
+# unknown to Clang, which rejects unknown -W options with -Werror, so gate
+# every warning flag on compiler support. cc.get_supported_arguments() filters
+# per-compiler; -Wshadow/-Wunused-macros exist in both but stay behind the
+# same gate for uniformity.
+dev_warning_flags = [
   '-Wno-unused-parameter',
   '-Wshadow',
   '-Wunused-macros',
   '-Wstringop-truncation',
   '-Wformat-truncation',
-  # Note: -Wfloat-conversion omitted because dbus.c needs it disabled
+]
+add_project_arguments(
+  cc.get_supported_arguments(dev_warning_flags),
   language: 'c',
 )
 

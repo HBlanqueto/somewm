@@ -165,7 +165,7 @@ int luaA_object_emit_signal_simple(lua_State *);
 
 #define LUA_OBJECT_FUNCS(lua_class, type, prefix)                              \
     LUA_CLASS_FUNCS(prefix, lua_class)                                         \
-    static inline type *                                                       \
+    static inline MAYBE_UNUSED type *                                          \
     prefix##_new(lua_State *L)                                                 \
     {                                                                          \
         type *p = lua_newuserdata(L, sizeof(type));                            \

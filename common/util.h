@@ -98,8 +98,23 @@ static inline void *memdup(const void *src, size_t len)
 /* Type introspection macros */
 #define fieldtypeof(type_t, m)  typeof(((type_t *)0)->m)
 
-/* String comparison macros (NULL-safe) */
+/* String comparison macros (NULL-safe).
+ *
+ * These used to start with a pointer-equality shortcut ((a) == (b)). Clang's
+ * -Wstring-compare flags that when one operand is a string literal: comparing
+ * a runtime pointer against a literal's address with == is always false and
+ * smells like a bug. The shortcut is redundant anyway — a_strcmp() is NULL-safe
+ * via NONULL() and returns 0 exactly when the two strings are equal, so the
+ * whole pointer fast-path is just a micro-optimization. Dropping it keeps both
+ * compilers warning-free. */
 #define NONULL(x)               ((x) ? (x) : "")
+
+/* Mark a function that only some translation units use (macro-generated helper
+ * families: array ops, Lua class methods). GCC only warns on unused *non-inline*
+ * static functions, but Clang's -Wunused-function also flags static inline ones
+ * that a TU happens not to call. There is no per-TU middle ground with a shared
+ * header macro, so the generated helpers are declared MAYBE_UNUSED. */
+#define MAYBE_UNUSED            __attribute__((unused))
 
 static inline int a_strcmp(const char *a, const char *b)
 {
@@ -116,11 +131,11 @@ static inline int a_strncmp(const char *a, const char *b, ssize_t n)
     return strncmp(NONULL(a), NONULL(b), n);
 }
 
-#define  A_STREQ(a, b)       (((a) == (b)) || a_strcmp(a, b) == 0)
+#define  A_STREQ(a, b)       (a_strcmp(a, b) == 0)
 #define A_STRNEQ(a, b)       (!A_STREQ(a, b))
-#define  A_STREQ_CASE(a, b)  (((a) == (b)) || a_strcasecmp(a, b) == 0)
+#define  A_STREQ_CASE(a, b)  (a_strcasecmp(a, b) == 0)
 #define A_STRNEQ_CASE(a, b)  (!A_STREQ_CASE(a, b))
-#define  A_STREQ_N(a, b, n)  (((a) == (b)) || (n) == ((ssize_t) 0) || a_strncmp(a, b, n) == 0)
+#define  A_STREQ_N(a, b, n)  (a_strncmp(a, b, n) == 0)
 #define A_STRNEQ_N(a, b)     (!A_STREQ_N(a, b))
 
 /** Compute a hash for a string (djb2 algorithm).
