@@ -45,6 +45,14 @@ All notable changes to somewm will be documented in this file.
   focused surface, mousegrabber state). Off by default and zero-cost when
   unset; see `docs/debugging.md`
 
+- `client:dominant_color()`: the compositor computes a client's dominant
+  color in C (`dominant_color.h`, a dependency-free ARGB32 histogram) from a
+  `content_width x rows` strip. The shared screenshot composite gained an
+  optional region of interest that skips buffers outside the strip and, for
+  NORMAL DMA-BUF transforms, reads back only the buffer rows that can land in
+  it. `rows` = 0 samples the whole content, optionally stepped so roughly
+  `thumb x thumb` pixels vote
+
 ### Changed
 
 - Autocolor live mode no longer re-samples idle clients: once the compositor

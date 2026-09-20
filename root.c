@@ -1799,10 +1799,16 @@ composite_transform_matrix(cairo_matrix_t *m, enum wl_output_transform t,
  * window geometry), dst_width/dst_height and transform. Deliberately ignores
  * blend_mode and the wait timeline, which do not apply to a cairo target, and
  * does not yet honour opacity or filter_mode.
+ *
+ * `src_y0` is the buffer-space Y of the first row of buf_surface. For a full
+ * readback it is 0; for a partial (ROI) readback it is the buffer row that row
+ * 0 of buf_surface represents, so the paint places the strip at the right
+ * node-relative offset.
  */
 static void
 composite_paint(struct screenshot_render_data *rdata, cairo_surface_t *buf_surface,
-                struct wlr_scene_buffer *scene_buffer, int sx, int sy)
+                struct wlr_scene_buffer *scene_buffer, int sx, int sy,
+                int src_y0)
 {
 	enum wl_output_transform t = wlr_output_transform_invert(scene_buffer->transform);
 	bool swaps = t & WL_OUTPUT_TRANSFORM_90;
@@ -1833,7 +1839,9 @@ composite_paint(struct screenshot_render_data *rdata, cairo_surface_t *buf_surfa
 	cairo_clip(rdata->cr);
 	cairo_scale(rdata->cr, dst_width / tw, dst_height / th);
 	cairo_transform(rdata->cr, &m);
-	cairo_translate(rdata->cr, -src.x, -src.y);
+	/* A partial (ROI) readback's row 0 is buffer row src_y0, so the source
+	 * origin sits at src.y - src_y0 instead of src.y. */
+	cairo_translate(rdata->cr, -src.x, src_y0 - src.y);
 	cairo_set_source_surface(rdata->cr, buf_surface, 0, 0);
 	cairo_paint(rdata->cr);
 	cairo_restore(rdata->cr);
@@ -1940,6 +1948,9 @@ composite_scene_buffer_to_cairo(struct wlr_scene_buffer *scene_buffer,
 	size_t stride;
 	bool need_free = false;
 	cairo_format_t cairo_fmt;
+	int src_y0 = 0;      /* buffer row that row 0 of a partial readback is */
+	int read_h = 0;      /* rows read back for the DMA-BUF path */
+	bool partial = false;
 
 	if (!scene_buffer->buffer) {
 		/* The scene releases the hairline's buffer after uploading it to a
@@ -1994,6 +2005,24 @@ composite_scene_buffer_to_cairo(struct wlr_scene_buffer *scene_buffer,
 	if (buf_width <= 0 || buf_height <= 0)
 		return;
 
+	/* ROI: skip buffers whose displayed rectangle does not intersect the
+	 * region of interest, before any readback. The rectangle is dst-sized at
+	 * the node position in subtree coordinates (the same space as offset_x/y).
+	 * This mirrors composite_paint's dst-width fallback so the test is exact. */
+	if (rdata->has_roi) {
+		struct wlr_fbox src = scene_buffer->src_box;
+		int dst_w, dst_h;
+		if (wlr_fbox_empty(&src))
+			src = (struct wlr_fbox){ 0, 0, buf_width, buf_height };
+		dst_w = scene_buffer->dst_width > 0 ? scene_buffer->dst_width : src.width;
+		dst_h = scene_buffer->dst_height > 0 ? scene_buffer->dst_height : src.height;
+		if (sx + rdata->offset_x >= rdata->roi_x + rdata->roi_w ||
+		    sx + rdata->offset_x + dst_w <= rdata->roi_x ||
+		    sy + rdata->offset_y >= rdata->roi_y + rdata->roi_h ||
+		    sy + rdata->offset_y + dst_h <= rdata->roi_y)
+			return;
+	}
+
 	/* First try direct buffer access (works for SHM buffers - widgets) */
 	if (wlr_buffer_begin_data_ptr_access(buffer, WLR_BUFFER_DATA_PTR_ACCESS_READ,
 	                                     &shm_data, &shm_format, &shm_stride)) {
@@ -2009,7 +2038,7 @@ composite_scene_buffer_to_cairo(struct wlr_scene_buffer *scene_buffer,
 
 			if (cairo_surface_status(buf_surface) == CAIRO_STATUS_SUCCESS) {
 				rdata->painted = true;
-				composite_paint(rdata, buf_surface, scene_buffer, sx, sy);
+				composite_paint(rdata, buf_surface, scene_buffer, sx, sy, 0);
 				cairo_surface_destroy(buf_surface);
 			}
 		}
@@ -2021,13 +2050,46 @@ composite_scene_buffer_to_cairo(struct wlr_scene_buffer *scene_buffer,
 	{
 		struct wlr_texture *texture;
 
+		src_y0 = 0;
+		read_h = buf_height;
+		partial = false;
+
 		texture = wlr_texture_from_buffer(rdata->renderer, buffer);
 		if (!texture)
 			return;
 
+		/* ROI: for a NORMAL transform the buffer is axis-aligned and
+		 * unscaled in Y except by the dst/buffer ratio, so we can read back
+		 * only the buffer rows that can land in the ROI. Map the ROI's
+		 * logical Y range back through src_box and the dst scale, round
+		 * outward, and clamp. Any other transform keeps the full readback. */
+		if (rdata->has_roi &&
+		    scene_buffer->transform == WL_OUTPUT_TRANSFORM_NORMAL) {
+			struct wlr_fbox src = scene_buffer->src_box;
+			double dst_h, by_min, by_max;
+			int by0, by1;
+			if (wlr_fbox_empty(&src))
+				src = (struct wlr_fbox){ 0, 0, buf_width, buf_height };
+			dst_h = scene_buffer->dst_height > 0 ? scene_buffer->dst_height : src.height;
+			by_min = src.y + (double)(rdata->roi_y - (sy + rdata->offset_y)) *
+			         src.height / dst_h;
+			by_max = src.y + (double)(rdata->roi_y + rdata->roi_h -
+			                          (sy + rdata->offset_y)) *
+			         src.height / dst_h;
+			by0 = (int)floor(fmin(by_min, by_max));
+			by1 = (int)ceil(fmax(by_min, by_max));
+			if (by0 < 0) by0 = 0;
+			if (by1 > buf_height) by1 = buf_height;
+			if (by0 < by1) {
+				src_y0 = by0;
+				read_h = by1 - by0;
+				partial = true;
+			}
+		}
+
 		/* Read at full buffer resolution, not dst (logical) dimensions */
 		stride = buf_width * 4;
-		pixels = malloc(stride * buf_height);
+		pixels = malloc(stride * read_h);
 		if (!pixels) {
 			wlr_texture_destroy(texture);
 			return;
@@ -2038,7 +2100,7 @@ composite_scene_buffer_to_cairo(struct wlr_scene_buffer *scene_buffer,
 			.data = pixels,
 			.format = DRM_FORMAT_ARGB8888,
 			.stride = stride,
-			.src_box = { .x = 0, .y = 0, .width = buf_width, .height = buf_height },
+			.src_box = { .x = 0, .y = src_y0, .width = buf_width, .height = read_h },
 		})) {
 			free(pixels);
 			wlr_texture_destroy(texture);
@@ -2046,6 +2108,8 @@ composite_scene_buffer_to_cairo(struct wlr_scene_buffer *scene_buffer,
 		}
 
 		wlr_texture_destroy(texture);
+		if (partial)
+			goto composite_partial;
 	}
 
 	/* Create Cairo surface at full buffer resolution */
@@ -2059,7 +2123,27 @@ composite_scene_buffer_to_cairo(struct wlr_scene_buffer *scene_buffer,
 	}
 
 	rdata->painted = true;
-	composite_paint(rdata, buf_surface, scene_buffer, sx, sy);
+	composite_paint(rdata, buf_surface, scene_buffer, sx, sy, 0);
+
+	cairo_surface_destroy(buf_surface);
+	if (need_free)
+		free(pixels);
+	return;
+
+composite_partial:;
+	/* The partial readback starts at buffer row src_y0; wrap it in a surface
+	 * of height read_h and let composite_paint place it at that row. */
+	buf_surface = cairo_image_surface_create_for_data(
+		pixels, CAIRO_FORMAT_ARGB32, buf_width, read_h, stride);
+
+	if (cairo_surface_status(buf_surface) != CAIRO_STATUS_SUCCESS) {
+		if (need_free)
+			free(pixels);
+		return;
+	}
+
+	rdata->painted = true;
+	composite_paint(rdata, buf_surface, scene_buffer, sx, sy, src_y0);
 
 	cairo_surface_destroy(buf_surface);
 	if (need_free)
@@ -2126,6 +2210,11 @@ luaA_root_get_content(lua_State *L)
 	rdata.renderer = drw;
 	rdata.offset_x = 0;
 	rdata.offset_y = 0;
+	rdata.has_roi = false;
+	rdata.roi_x = 0;
+	rdata.roi_y = 0;
+	rdata.roi_w = 0;
+	rdata.roi_h = 0;
 
 	/* Iterate scene nodes for client content (GPU-rendered surfaces) and
 	 * solid shadow fills (wlr_scene_rects). */

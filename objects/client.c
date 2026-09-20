@@ -113,6 +113,7 @@
 #include "objects/spawn.h"
 #include "../property.h"
 #include "../screenshot_compose.h"
+#include "../dominant_color.h"
 
 /* Forward declaration - applies client geometry to wlroots scene graph */
 void apply_geometry_to_wlroots(client_t *c);
@@ -4892,6 +4893,11 @@ luaA_client_get_content(lua_State *L, client_t *c)
     rdata.painted   = false;
     rdata.offset_x  = -c->scene_surface->node.x;
     rdata.offset_y  = -c->scene_surface->node.y;
+    rdata.has_roi   = false;
+    rdata.roi_x     = 0;
+    rdata.roi_y     = 0;
+    rdata.roi_w     = 0;
+    rdata.roi_h     = 0;
     wlr_scene_node_for_each_buffer(&c->scene_surface->node,
                                    composite_scene_buffer_to_cairo, &rdata);
 
@@ -4912,6 +4918,146 @@ luaA_client_get_content(lua_State *L, client_t *c)
     /* lua has to make sure to free the ref or we have a leak */
     lua_pushlightuserdata(L, surface);
     return 1;
+}
+
+/** Compute the dominant color of a client's content, in the compositor.
+ *
+ * Composites the client's scene subtree into a content_width x rows cairo
+ * strip (rows = 0 means the whole content) and runs the dependency-free
+ * dominant_color() core on the strip's pixels. The ROI in the shared
+ * composite helper keeps SHM to the strip and, for NORMAL DMA-BUF buffers,
+ * reads back only the buffer rows that can land in the strip.
+ *
+ * @tparam table opts Optional.
+ * @tparam integer opts.rows Number of logical rows from the top to sample;
+ *         nil or 0 means the whole content.
+ * @tparam integer opts.step_x Horizontal sample step (default 2).
+ * @tparam integer opts.step_y Vertical sample step (default 1).
+ * @tparam integer opts.bits Histogram bits per channel, 3..5 (default 4).
+ * @tparam integer opts.min_alpha Alpha floor for voting pixels (default 32).
+ * @tparam integer opts.thumb Approximate sample-grid size for a whole-content
+ *         sample: when rows is 0/nil and no step_x/step_y are given, the
+ *         steps derive from the content size and thumb so roughly
+ *         thumb x thumb pixels vote (default 0 = no thumb-based stepping).
+ * @treturn string hex The dominant color as "#rrggbb".
+ * @treturn number share Fraction of voting pixels in the winning bin (0..1).
+ * @method dominant_color
+ */
+static int
+luaA_client_dominant_color(lua_State *L)
+{
+    client_t *c = luaA_checkudata(L, 1, &client_class);
+    cairo_surface_t *surface;
+    cairo_t *cr;
+    int dst_width, dst_height;
+    int rows = 0, step_x = 2, step_y = 1, bits = 4, min_alpha = 32, thumb = 0;
+    int strip_h;
+    struct screenshot_render_data rdata;
+    uint32_t *pixels;
+    int stride;
+    struct dominant_color_opts opts;
+    struct dominant_color_result res;
+    char hex[8];
+
+    /* Optional opts table. */
+    if (lua_gettop(L) >= 2 && lua_istable(L, 2)) {
+        lua_getfield(L, 2, "rows");
+        if (lua_isnumber(L, -1)) rows = (int)lua_tointeger(L, -1);
+        lua_pop(L, 1);
+        lua_getfield(L, 2, "step_x");
+        if (lua_isnumber(L, -1)) step_x = (int)lua_tointeger(L, -1);
+        lua_pop(L, 1);
+        lua_getfield(L, 2, "step_y");
+        if (lua_isnumber(L, -1)) step_y = (int)lua_tointeger(L, -1);
+        lua_pop(L, 1);
+        lua_getfield(L, 2, "bits");
+        if (lua_isnumber(L, -1)) bits = (int)lua_tointeger(L, -1);
+        lua_pop(L, 1);
+        lua_getfield(L, 2, "min_alpha");
+        if (lua_isnumber(L, -1)) min_alpha = (int)lua_tointeger(L, -1);
+        lua_pop(L, 1);
+        lua_getfield(L, 2, "thumb");
+        if (lua_isnumber(L, -1)) thumb = (int)lua_tointeger(L, -1);
+        lua_pop(L, 1);
+    }
+    if (step_x < 1) step_x = 1;
+    if (step_y < 1) step_y = 1;
+    if (bits < 3) bits = 3;
+    if (bits > 5) bits = 5;
+    if (min_alpha < 0) min_alpha = 0;
+    if (min_alpha > 255) min_alpha = 255;
+
+    /* Same guards and subtree offsets as luaA_client_get_content. */
+    dst_width  = c->geometry.width;
+    dst_height = c->geometry.height;
+    dst_width  -= c->titlebar[CLIENT_TITLEBAR_LEFT].size + c->titlebar[CLIENT_TITLEBAR_RIGHT].size;
+    dst_height -= c->titlebar[CLIENT_TITLEBAR_TOP].size + c->titlebar[CLIENT_TITLEBAR_BOTTOM].size;
+    if (dst_width <= 0 || dst_height <= 0)
+        return 0;
+    if (!c->scene_surface)
+        return 0;
+
+    /* A whole-content sample ("full" region): if no explicit step was given,
+     * derive one from `thumb` so roughly thumb x thumb pixels vote. */
+    if (rows <= 0 && thumb > 0) {
+        step_x = (dst_width + thumb - 1) / thumb;
+        step_y = (dst_height + thumb - 1) / thumb;
+        if (step_x < 1) step_x = 1;
+        if (step_y < 1) step_y = 1;
+    }
+
+    strip_h = rows > 0 ? rows : dst_height;
+    if (strip_h > dst_height)
+        strip_h = dst_height;
+
+    surface = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, dst_width, strip_h);
+    if (cairo_surface_status(surface) != CAIRO_STATUS_SUCCESS)
+        return 0;
+
+    cr = cairo_create(surface);
+
+    rdata.cr        = cr;
+    rdata.renderer  = drw;
+    rdata.painted   = false;
+    rdata.offset_x  = -c->scene_surface->node.x;
+    rdata.offset_y  = -c->scene_surface->node.y;
+    rdata.has_roi   = strip_h < dst_height;
+    rdata.roi_x     = 0;
+    rdata.roi_y     = 0;
+    rdata.roi_w     = dst_width;
+    rdata.roi_h     = strip_h;
+    wlr_scene_node_for_each_buffer(&c->scene_surface->node,
+                                   composite_scene_buffer_to_cairo, &rdata);
+
+    cairo_destroy(cr);
+
+    /* Nothing painted (rapid scene reorder / no buffer yet): refuse, the
+     * caller falls back to the last known color. */
+    if (!rdata.painted) {
+        cairo_surface_destroy(surface);
+        return 0;
+    }
+
+    cairo_surface_flush(surface);
+    pixels = (uint32_t *)cairo_image_surface_get_data(surface);
+    stride = cairo_image_surface_get_stride(surface) / 4;
+
+    opts.bits      = bits;
+    opts.step_x    = step_x;
+    opts.step_y    = step_y;
+    opts.min_alpha = min_alpha;
+
+    if (!dominant_color(pixels, dst_width, strip_h, stride, &opts, &res)) {
+        cairo_surface_destroy(surface);
+        return 0;
+    }
+
+    cairo_surface_destroy(surface);
+
+    snprintf(hex, sizeof(hex), "#%02x%02x%02x", res.r, res.g, res.b);
+    lua_pushstring(L, hex);
+    lua_pushnumber(L, res.share);
+    return 2;
 }
 
 static int
@@ -5506,6 +5652,7 @@ client_class_setup(lua_State *L)
         { "titlebar_bottom", luaA_client_titlebar_bottom },
         { "titlebar_left", luaA_client_titlebar_left },
         { "get_icon", luaA_client_get_some_icon },
+        { "dominant_color", luaA_client_dominant_color },
         { "get_xproperty", luaA_client_get_xproperty },
         { "set_xproperty", luaA_client_set_xproperty },
         { "_border_is_focus_color", luaA_client_border_is_focus_color },

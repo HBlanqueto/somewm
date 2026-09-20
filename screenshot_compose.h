@@ -23,6 +23,14 @@ struct screenshot_render_data {
 	struct wlr_renderer *renderer;
 	int offset_x, offset_y;
 	bool painted;	/* set when any buffer was composited into cr */
+	/* Optional region of interest, in subtree coordinates (i.e. relative to
+	 * the same origin as offset_x/offset_y). When has_roi is true, buffers
+	 * whose displayed rectangle does not intersect it are skipped before any
+	 * readback, and DMA-BUF buffers under a NORMAL transform are read back
+	 * only for the rows that can land in it. Unset (false) means the current
+	 * behavior: every buffer is read and composited in full. */
+	bool has_roi;
+	int roi_x, roi_y, roi_w, roi_h;
 };
 
 void composite_scene_buffer_to_cairo(struct wlr_scene_buffer *scene_buffer,

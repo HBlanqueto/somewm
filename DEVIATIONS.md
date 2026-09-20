@@ -347,6 +347,29 @@ Capture screen contents from Lua:
 local surface = screen.primary.content
 ```
 
+### `client:dominant_color()` - Compositor-Side Dominant Color
+
+The compositor computes a client's dominant color directly from its scene
+tree, without a Lua readback. The method composites the content into a
+`content_width x rows` cairo strip and runs a dependency-free C histogram
+(`dominant_color.h`) on the strip's pixels:
+
+```lua
+local hex, share = c:dominant_color { rows = 12, step_x = 2, step_y = 1 }
+```
+
+- `rows` is in logical pixels from the top of the content; nil or 0 means the
+  whole content. The ROI support in the shared screenshot composite skips
+  buffers outside the strip and, for NORMAL DMA-BUF transforms, reads back
+  only the buffer rows that can land in it.
+- `step_x`/`step_y` (default 2/1) control the sample grid; for a whole-content
+  sample a `thumb` option (approximate sample-grid size) derives the steps so
+  roughly `thumb x thumb` pixels vote.
+- Returns `"#rrggbb"` and the winning-bin share, or nothing when nothing
+  painted or nothing voted.
+
+This is what `fx.autocolor` uses; see its module header for the sampling cost.
+
 ### Additional Client Properties
 
 | Property | Description |
