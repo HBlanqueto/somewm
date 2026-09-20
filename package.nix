@@ -31,6 +31,8 @@
   gtk3 ? null,
   extraGIPackages ? [ ],
   extraLuaPackages ? (_: [ ]),
+  fetchFromGitHub,
+  lcms2,
 }:
 
 assert gtk3Support -> gtk3 != null;
@@ -45,6 +47,21 @@ let
     ]
     ++ (extraLuaPackages ps)
   );
+  # SceneFX 0.5 is required by the wlroots 0.20 integration. Some nixpkgs
+  # pins only ship 0.4.x, so pin the src to the 0.5 tag (and wlroots 0.20)
+  # when needed.
+  scenefx_0_5 = if lib.versionAtLeast scenefx.version "0.5"
+    then scenefx
+    else (scenefx.override { wlroots_0_19 = wlroots_0_20; }).overrideAttrs (old: {
+      version = "0.5";
+      src = fetchFromGitHub {
+        owner = "wlrfx";
+        repo = "scenefx";
+        rev = "refs/tags/0.5";
+        hash = "sha256-vUjLG6eubEhJJVa9LPygIcVmNoHwYbSUTJcWEcbxnU4=";
+      };
+      buildInputs = old.buildInputs ++ [ lcms2 ];
+    });
 in
 stdenv.mkDerivation {
   pname = "somewm";
@@ -79,7 +96,7 @@ stdenv.mkDerivation {
     pango
     wayland
     wayland-protocols
-    scenefx
+    scenefx_0_5
     wlroots_0_20
     libxcb
     libxcb-wm
