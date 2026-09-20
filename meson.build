@@ -498,6 +498,7 @@ somewm_sources = [
   'selection.c',
   'pam_auth.c',
   'nested_inhibitor.c',
+  'dominant_color.c',
   # Common
   'common/luaclass.c',
   'common/luaobject.c',
@@ -674,6 +675,18 @@ if fs.exists('tests/test-fractional-pattern-client.c')
     install: false,
   )
 endif
+
+# Unit test for the dependency-free dominant-color core (dominant_color.h).
+# Pure C, no compositor: registered with test() so it runs under `meson test`.
+# The test defines DOMINANT_COLOR_IMPLEMENTATION itself, so it is
+# self-contained and does not link the compositor's dominant_color.c wrapper.
+test_dominant_color = executable(
+  'test-dominant-color',
+  ['tests/test-dominant-color.c'],
+  include_directories: include_directories('.'),
+  dependencies: [m_dep],
+)
+test('dominant-color', test_dominant_color)
 
 # Test XDG toplevel client that logs decoded wl_pointer events to a marker file.
 # Used by test-titlebar-pointer-leak.lua to assert no pointer events leak to the
