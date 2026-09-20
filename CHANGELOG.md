@@ -55,6 +55,19 @@ All notable changes to somewm will be documented in this file.
 
 ### Changed
 
+- The release build now uses Clang + lld + ThinLTO instead of GCC: the
+  `somewm`, `somewm-client` and `liblgi_closure_guard` binaries are built
+  with `-flto=thin` and linked with LLD (`-fuse-ld=lld`), which measurably
+  shrinks the binaries and is never slower than the old GCC baseline on the
+  signal-dispatch benchmarks. The GCC toolchain stays available via the
+  `useGcc` package argument (or `make all CC=gcc ...`) for comparison and
+  upstream parity. Only somewm's own code is rebuilt: wlroots, SceneFX,
+  LuaJIT, cairo and Mesa remain shared libraries from nixpkgs.
+  Warning flags in meson.build are now filtered through
+  `cc.get_supported_arguments()`, so GCC-only flags like
+  `-Wstringop-truncation` no longer fail a Clang build under `-Werror`, and
+  the code is warning-free on both compilers.
+
 - Autocolor live mode no longer re-samples idle clients: once the compositor
   has delivered a `surface::commit`, the interval pump only runs for a client
   that is dirty or still within a small post-commit trailing budget (which

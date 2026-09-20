@@ -11,19 +11,50 @@
 
 .PHONY: all install uninstall clean setup reconfigure check-qa test test-unit test-check test-signal test-integration test-orchestrator test-restart test-one-restart test-asan test-one test-visual test-one-visual test-ci test-fast build-test build-bench bench-run bench-run-live bench-flamegraph bench-diff bench-heaptrack
 
-# Default build: optimized release, no sanitizers
+# =============================================================================
+# Toolchain
+#
+# The release build (all) uses Clang + lld + ThinLTO by default. Override any
+# of these on the make command line (or .local.mk) to build with the system
+# GCC toolchain instead:
+#   make all CC=gcc CXX=g++ AR=ar NM=nm RANLIB=ranlib LDFLAGS_EXTRA=
+# To flip only the linker (keep Clang, use GNU ld), pass
+#   LDFLAGS_EXTRA=-fuse-ld=gold
+# =============================================================================
+
+CC      ?= clang
+CXX     ?= clang++
+AR      ?= llvm-ar
+NM      ?= llvm-nm
+RANLIB  ?= llvm-ranlib
+# Extra linker flags (e.g. -fuse-ld=lld, or nothing when the default is fine).
+LDFLAGS_EXTRA ?= -fuse-ld=lld
+# ThinLTO is on for the release build only; other targets stay LTO-free.
+LTO_FLAGS ?= -Db_lto=true -Db_lto_mode=thin
+
+# Environment prefix for meson setup: point it at the chosen toolchain.
+export CC CXX AR NM RANLIB
+
+# Default build: optimized release, no sanitizers, Clang + ThinLTO.
 all:
-	@test -d build || meson setup build -Dbuildtype=release -Db_sanitize=none $(if $(LUA_PKG),-Dlua_pkg=$(LUA_PKG),) $(MESON_OPTS)
+	@test -d build || CC=$(CC) CXX=$(CXX) AR=$(AR) NM=$(NM) RANLIB=$(RANLIB) \
+		meson setup build -Dbuildtype=release -Db_sanitize=none \
+		$(if $(LDFLAGS_EXTRA),-Dc_link_args=$(LDFLAGS_EXTRA),) \
+		$(LTO_FLAGS) $(if $(LUA_PKG),-Dlua_pkg=$(LUA_PKG),) $(MESON_OPTS)
 	ninja -C build
 
-# AddressSanitizer + UBSan build (separate dir, for development)
+# AddressSanitizer + UBSan build (separate dir, for development). No LTO.
 asan:
-	@test -d build-asan || meson setup build-asan -Db_sanitize=address,undefined $(if $(LUA_PKG),-Dlua_pkg=$(LUA_PKG),) $(MESON_OPTS)
+	@test -d build-asan || CC=$(CC) CXX=$(CXX) AR=$(AR) NM=$(NM) RANLIB=$(RANLIB) \
+		meson setup build-asan -Db_sanitize=address,undefined \
+		$(if $(LUA_PKG),-Dlua_pkg=$(LUA_PKG),) $(MESON_OPTS)
 	ninja -C build-asan
 
 # Build for tests: NO ASAN (fast) - explicitly disable sanitizers, enable test PAM stub
 build-test:
-	@test -d build-test || meson setup build-test -Db_sanitize=none -Dtest_pam=true $(if $(LUA_PKG),-Dlua_pkg=$(LUA_PKG),) $(MESON_OPTS)
+	@test -d build-test || CC=$(CC) CXX=$(CXX) AR=$(AR) NM=$(NM) RANLIB=$(RANLIB) \
+		meson setup build-test -Db_sanitize=none -Dtest_pam=true \
+		$(if $(LUA_PKG),-Dlua_pkg=$(LUA_PKG),) $(MESON_OPTS)
 	ninja -C build-test
 
 install:
@@ -33,7 +64,7 @@ uninstall:
 	ninja -C build uninstall
 
 clean:
-	rm -rf build build-test build-asan
+	rm -rf build build-test build-asan build-bench build-clang
 
 # Just setup (useful for IDE integration)
 setup:
@@ -147,9 +178,11 @@ endif
 # Benchmarking
 # =============================================================================
 
-# Build with bench instrumentation (no ASAN, debugoptimized)
+# Build with bench instrumentation (no ASAN, debugoptimized). No LTO/-march/PGO:
+# the counters change the code and would not match a PGO profile.
 build-bench:
-	@test -d build-bench || meson setup build-bench -Db_sanitize=none -Dbuildtype=debugoptimized -Dbench=true
+	@test -d build-bench || CC=$(CC) CXX=$(CXX) AR=$(AR) NM=$(NM) RANLIB=$(RANLIB) \
+		meson setup build-bench -Db_sanitize=none -Dbuildtype=debugoptimized -Dbench=true
 	ninja -C build-bench
 
 # Run benchmarks in headless mode

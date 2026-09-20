@@ -1,6 +1,7 @@
 {
   lib,
   stdenv,
+  llvmPackages,
   cairo,
   dbus,
   gdk-pixbuf,
@@ -33,11 +34,22 @@
   extraLuaPackages ? (_: [ ]),
   fetchFromGitHub,
   lcms2,
+  # Toolchain knobs.
+  # `useGcc` switches back to the stock GCC stdenv (for comparison and upstream
+  # parity). `march` (e.g. "znver3") tunes for the host CPU; the default null
+  # keeps the portable baseline. Measured on this machine's Zen 3, -march and
+  # PGO did not beat the Clang + ThinLTO baseline beyond bench noise, so they
+  # are left as opt-in knobs rather than defaults.
+  useGcc ? false,
+  march ? null,
 }:
 
 assert gtk3Support -> gtk3 != null;
 
 let
+  # Clang + lld + ThinLTO by default; stock GCC when useGcc is set.
+  toolchain = if useGcc then stdenv else llvmPackages.stdenv;
+  cflags = lib.optional (march != null) "-march=${march}";
   luaEnv = luajit.withPackages (
     ps:
     with ps;
@@ -63,7 +75,7 @@ let
       buildInputs = old.buildInputs ++ [ lcms2 ];
     });
 in
-stdenv.mkDerivation {
+toolchain.mkDerivation {
   pname = "somewm";
   version = "dev";
 
@@ -78,6 +90,10 @@ stdenv.mkDerivation {
     ninja
     pkg-config
     wayland-scanner
+  ]
+  ++ lib.optionals (!useGcc) [
+    # lld for the default Clang toolchain (-Dc_link_args=-fuse-ld=lld).
+    llvmPackages.lld
   ];
 
   buildInputs = [
@@ -105,7 +121,34 @@ stdenv.mkDerivation {
   ]
   ++ lib.optional gtk3Support gtk3;
 
-  mesonFlags = [ "-Dsystemd=disabled" ];
+  # meson flags and toolchain vary (LTO/LLD/GCC/march), and nixpkgs'
+  # meson hook reuses the cached source copy with its already-configured
+  # build dir across derivations, which breaks --reconfigure when flags
+  # change. Give each toolchain its own build dir so a changed flag never
+  # meets a stale meson-private state.
+  mesonBuildDir = "build-${if useGcc then "gcc" else "clang"}";
+
+  mesonFlags =
+    [ "-Dsystemd=disabled" ]
+    ++ lib.optionals (!useGcc) [
+      # ThinLTO + lld. The clang stdenv's bintools is GNU binutils, so the
+      # linker must be named explicitly; ld.lld is on PATH via llvmPackages.lld.
+      "-Db_lto=true"
+      "-Db_lto_mode=thin"
+      "-Dc_link_args=-fuse-ld=lld"
+    ];
+
+  # march reaches the compiler through NIX_CFLAGS_COMPILE (the cc-wrapper
+  # applies it to every TU in this derivation).
+  env.NIX_CFLAGS_COMPILE = lib.concatStringsSep " " cflags;
+
+  # The clang stdenv does not set LD_LIBRARY_PATH the way the GCC stdenv does,
+  # so meson's `cc.run()` (the LGI check, and any try-run) cannot find shared
+  # libs at configure time. luajit is the one checked at configure; make it
+  # findable so the LGI probe passes regardless of toolchain.
+  preConfigure = ''
+    export LD_LIBRARY_PATH="${luajit}/lib''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+  '';
 
   postFixup =
     let
