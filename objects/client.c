@@ -1929,6 +1929,24 @@ client_getbyframewin(xcb_window_t w)
     return NULL;
 }
 
+/** Mirror the Awesome focus state onto the wlr-foreign-toplevel ACTIVATED
+ * flag, so external consumers (taskbars, Quickshell's ToplevelManager) can
+ * track the active window on every focus path.
+ *
+ * wlr_foreign_toplevel_handle_v1_set_activated() is a no-op when the state
+ * already matches, so this may be called from any focus path without
+ * generating duplicate protocol traffic.
+ *
+ * \param c The client whose toplevel flag changes (may be NULL).
+ * \param activated Whether the client is the active toplevel.
+ */
+void
+client_set_toplevel_activated(client_t *c, bool activated)
+{
+    if(c && c->toplevel_handle)
+        wlr_foreign_toplevel_handle_v1_set_activated(c->toplevel_handle, activated);
+}
+
 /** Unfocus a client (internal).
  * \param c The client.
  */
@@ -1937,6 +1955,7 @@ client_unfocus_internal(client_t *c)
 {
     lua_State *L = globalconf_get_lua_State();
     globalconf.focus.client = NULL;
+    client_set_toplevel_activated(c, false);
 
     luaA_object_push(L, c);
 
@@ -2060,6 +2079,7 @@ client_focus_update(client_t *c)
 
     focused_new = globalconf.focus.client != c;
     globalconf.focus.client = c;
+    client_set_toplevel_activated(c, true);
 
     /* According to EWMH, we have to remove the urgent state from a client.
      * This should be done also for the current/focused client (FS#1310). */

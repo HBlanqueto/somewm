@@ -446,6 +446,7 @@ void client_set_skip_taskbar(lua_State *, int, bool);
 void client_set_motif_wm_hints(lua_State *, int, motif_wm_hints_t);
 void client_focus(client_t *);
 bool client_focus_update(client_t *);
+void client_set_toplevel_activated(client_t *, bool);
 void client_focus_refresh(void);
 void client_refresh(void);
 void client_destroy_later(void);
