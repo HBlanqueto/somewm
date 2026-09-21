@@ -745,6 +745,19 @@ arrangelayers(Monitor *m)
 	for (i = 3; i >= 0; i--)
 		arrangelayer(m, &m->layers[i], &usable_area, 1);
 
+	/* Remember the usable area reserved by layer-shell exclusive zones (A).
+	 * The final workarea is the intersection of A with the area reduced by
+	 * drawin/client struts (B), so a wibox and a layer panel on the same edge
+	 * overlap (larger wins) instead of one overwriting the other.
+	 * NOTE: lookup via luaA_screen_get_by_monitor(); globalconf.screens is
+	 * only populated during a hot reload, so it must not gate this path. */
+	{
+		lua_State *L = globalconf_get_lua_State();
+		screen_t *screen = L ? luaA_screen_get_by_monitor(L, m) : NULL;
+		if (screen && screen->valid)
+			screen->layer_workarea = usable_area;
+	}
+
 	/* Apply drawin struts (from Lua wibars) to the usable area
 	 * This must happen AFTER layer shell exclusive zones but BEFORE setting m->w */
 	some_monitor_apply_drawin_struts(m, &usable_area);
@@ -758,7 +771,7 @@ arrangelayers(Monitor *m)
 		/* Update Lua screen.workarea property to match the new usable area
 		 * This emits property::workarea signal so layouts get the correct workarea */
 		L = globalconf_get_lua_State();
-		if (L && globalconf.screens.tab) {
+		if (L) {
 			screen = luaA_screen_get_by_monitor(L, m);
 			if (screen) {
 				screen_set_workarea(L, screen, &usable_area);

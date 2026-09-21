@@ -28,6 +28,7 @@ typedef struct screen_t {
 	screen_lifecycle_t lifecycle;  /* Who manages this screen's lifecycle */
 	struct wlr_box geometry;       /* Cached screen geometry (x, y, width, height) */
 	struct wlr_box workarea;       /* Cached workarea (geometry minus struts) */
+	struct wlr_box layer_workarea; /* Usable area from layer-shell exclusive zones */
 	char *name;                    /* User-assigned screen name */
 	struct output_t *virtual_output; /* Virtual output for fake screens (NULL for real screens) */
 } screen_t;

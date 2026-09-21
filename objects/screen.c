@@ -145,6 +145,7 @@ luaA_screen_new(lua_State *L, Monitor *m, int index)
 	screen->virtual_output = NULL;
 	some_monitor_get_geometry(m, &screen->geometry);
 	screen->workarea = screen->geometry;
+	screen->layer_workarea = screen->geometry;  /* No layer-shell zones yet */
 
 	/* Store reference in regular registry to prevent GC and allow retrieval */
 	lua_pushvalue(L, -1);
@@ -308,6 +309,7 @@ void
 screen_added(lua_State *L, screen_t *screen)
 {
 	screen->workarea = screen->geometry;
+	screen->layer_workarea = screen->geometry;  /* No layer-shell zones yet */
 	screen->valid = true;
 	luaA_object_push(L, screen);
 	luaA_object_emit_signal(L, -1, "_added", 0);
@@ -680,14 +682,16 @@ screen_set_workarea(lua_State *L, screen_t *screen, struct wlr_box *workarea)
 	}
 }
 
-/** Update screen workarea based on all drawin and client struts
- * \param screen Screen to update workarea for
+/** Compute the monitor area reduced by all client and drawin struts (B).
+ * \param screen Screen to compute the strut area for
+ * \param out Receives the geometry minus struts (measured from the full
+ *        screen geometry)
  *
- * This matches AwesomeWM's screen_update_workarea() signature.
- * Aggregates struts from ALL visible drawins and clients on the screen.
+ * Does not touch the workarea caches or emit signals; callers combine the
+ * result with the layer-shell reserved area as needed.
  */
-void
-screen_update_workarea(screen_t *screen)
+static void
+screen_get_strut_area(screen_t *screen, struct wlr_box *out)
 {
 	area_t area = screen->geometry;
 	uint16_t top = 0, bottom = 0, left = 0, right = 0;
@@ -776,6 +780,55 @@ screen_update_workarea(screen_t *screen)
 	area.width -= MIN(area.width, left + right);
 	area.height -= MIN(area.height, top + bottom);
 
+	*out = area;
+}
+
+/** Intersect a workarea with the layer-shell reserved area (A).
+ * \param screen Screen whose layer-shell reserved area is used
+ * \param area Box to reduce in place (strut-only area on input)
+ *
+ * Both areas are measured from the full monitor geometry, so reservations on
+ * the same edge coming from a wibox and a layer-shell panel overlap (the
+ * larger one wins) instead of one overwriting the other. If the two areas do
+ * not intersect (they reserve more than the output), fall back to the
+ * layer-shell area and warn, so an external panel is never overlapped.
+ */
+static void
+screen_combine_layer_workarea(screen_t *screen, struct wlr_box *area)
+{
+	struct wlr_box combined;
+
+	if (screen->layer_workarea.width <= 0 || screen->layer_workarea.height <= 0)
+		return;
+
+	if (wlr_box_intersection(&combined, area, &screen->layer_workarea) &&
+	    combined.width > 0 && combined.height > 0) {
+		*area = combined;
+		return;
+	}
+
+	/* wlr_log is initialized before its default level is applied in this
+	 * fork, so WLR_ERROR is silent at default; use stderr directly. */
+	fprintf(stderr, "somewm: screen %d: strut area and layer-shell area do "
+		"not intersect; falling back to layer-shell area\n", screen->index);
+	*area = screen->layer_workarea;
+}
+
+/** Update screen workarea based on all drawin and client struts
+ * \param screen Screen to update workarea for
+ *
+ * This matches AwesomeWM's screen_update_workarea() signature.
+ * Aggregates struts from ALL visible drawins and clients on the screen, then
+ * intersects the result with the area reserved by layer-shell exclusive zones.
+ */
+void
+screen_update_workarea(screen_t *screen)
+{
+	area_t area;
+
+	screen_get_strut_area(screen, &area);
+	screen_combine_layer_workarea(screen, &area);
+
 	if (AREA_EQUAL(area, screen->workarea))
 		return;
 
@@ -800,7 +853,9 @@ screen_update_workarea(screen_t *screen)
  * \param area Box to apply struts to (modified in place)
  *
  * This is called from arrangelayers() to ensure drawin struts (from Lua wibars)
- * are preserved when layer shell surfaces rearrange.
+ * are preserved when layer shell surfaces rearrange. Recomputes the strut-only
+ * area and intersects it with the layer-shell reserved area stored on the
+ * screen by arrangelayers(), so neither reservation overwrites the other.
  */
 void
 luaA_monitor_apply_drawin_struts(lua_State *L, Monitor *m, struct wlr_box *area)
@@ -815,18 +870,10 @@ luaA_monitor_apply_drawin_struts(lua_State *L, Monitor *m, struct wlr_box *area)
 	if (!screen || !screen->valid)
 		return;
 
-	/* Apply the screen's cached workarea which already includes drawin struts
-	 * The workarea is updated whenever drawin struts change via
-	 * screen_update_workarea() */
-	if (screen->workarea.width > 0 && screen->workarea.height > 0) {
-		/* Only apply if the workarea is smaller than current area (has struts) */
-		if (screen->workarea.y > area->y ||
-		    screen->workarea.x > area->x ||
-		    (screen->workarea.width < area->width) ||
-		    (screen->workarea.height < area->height)) {
-			*area = screen->workarea;
-		}
-	}
+	screen_get_strut_area(screen, area);
+	screen_combine_layer_workarea(screen, area);
+
+	/* The caller writes the result back through screen_set_workarea(). */
 }
 
 /* ========================================================================
@@ -1756,6 +1803,11 @@ luaA_screen_fake_resize(lua_State *L)
 	screen->geometry.y = y;
 	screen->geometry.width = width;
 	screen->geometry.height = height;
+
+	/* A virtual resize invalidates any cached layer-shell reserved area:
+	 * reset it to the new full geometry so the strut area is not intersected
+	 * with a stale box. */
+	screen->layer_workarea = screen->geometry;
 
 	/* Update workarea properly (accounts for struts from wibars)
 	 * This will use geometry as baseline and emit property::workarea if needed */
