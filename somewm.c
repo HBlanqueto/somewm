@@ -4320,17 +4320,18 @@ focusclient(Client *c, int lift)
 		} else if (old_c && !client_is_unmanaged(old_c)) {
 			/* Only do protocol-level deactivation if new client doesn't want focus.
 			 * Skipping this avoids issues with winecfg and similar clients. */
-			if (!c || !client_wants_focus(c)) {
+			if (!c || !client_wants_focus(c))
 				client_activate_surface(old, 0);
-				if (old_c->toplevel_handle)
-					wlr_foreign_toplevel_handle_v1_set_activated(old_c->toplevel_handle, false);
-			}
+			/* The foreign-toplevel ACTIVATED flag tracks keyboard focus, so
+			 * old_c loses it here regardless of the surface-level guard. */
+			client_set_toplevel_activated(old_c, false);
 		}
 	}
 
 	/* Unfocus old client from globalconf (AwesomeWM pattern) - this emits proper signals */
 	if (c && globalconf.focus.client && globalconf.focus.client != c &&
 	    !client_is_unmanaged(globalconf.focus.client)) {
+		client_set_toplevel_activated(globalconf.focus.client, false);
 		client_set_border_color(globalconf.focus.client, get_bordercolor());
 		luaA_object_push(globalconf_L, globalconf.focus.client);
 		lua_pushboolean(globalconf_L, false);
@@ -4364,8 +4365,7 @@ focusclient(Client *c, int lift)
 	/* Activate the new client */
 	client_activate_surface(client_surface(c), 1);
 
-	if (c->toplevel_handle)
-		wlr_foreign_toplevel_handle_v1_set_activated(c->toplevel_handle, true);
+	client_set_toplevel_activated(c, true);
 
 	/* CRITICAL: Apply keyboard focus IMMEDIATELY while surface is valid (not deferred)
 	 * AwesomeWM defers this, but Wayland surface pointers can become invalid by the time
