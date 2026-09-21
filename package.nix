@@ -64,7 +64,13 @@ let
   # SceneFX 0.5 is required by the wlroots 0.20 integration. Some nixpkgs
   # pins only ship 0.4.x, so pin the src to the 0.5 tag (and wlroots 0.20)
   # when needed.
-  scenefx_0_5 = if lib.versionAtLeast scenefx.version "0.5"
+  #
+  # subprojects/packagefiles/scenefx-0.5-clip-inset.patch: upstream's
+  # fx_pass.c shrinks a rounded clipped region by 0.3 * radius before
+  # rasterizing, which erases the window border ring's pixel at ~45 degrees
+  # (a chopped corner on 1px borders). Carried here until the fix lands
+  # upstream; the same file is wired into the meson wrap for non-Nix builds.
+  scenefx_0_5 = (if lib.versionAtLeast scenefx.version "0.5"
     then scenefx
     else (scenefx.override { wlroots_0_19 = wlroots_0_20; }).overrideAttrs (old: {
       version = "0.5";
@@ -75,6 +81,9 @@ let
         hash = "sha256-vUjLG6eubEhJJVa9LPygIcVmNoHwYbSUTJcWEcbxnU4=";
       };
       buildInputs = old.buildInputs ++ [ lcms2 ];
+    })).overrideAttrs (old: {
+      patches = (old.patches or [ ]) ++
+        [ ./subprojects/packagefiles/scenefx-0.5-clip-inset.patch ];
     });
 in
 toolchain.mkDerivation {

@@ -91,6 +91,16 @@ All notable changes to somewm will be documented in this file.
 
 ### Fixed
 
+- A 1px window border no longer loses a pixel on the corner arc: SceneFX's
+  `apply_clip_region()` shrank a rounded clipped region by `0.3 * radius`
+  before rasterizing, but a ring's outer arc passes at `(1 - sqrt(2)/2) *
+  radius` (~0.293 * r) from the cutout corner, so the ~45 degree pixel was
+  outside the drawn region and never rendered (a chopped corner). The patch
+  insets the skipped region by the full corner radius, the cutout's
+  inscribed rectangle, and is applied to the SceneFX build
+  (`subprojects/packagefiles/scenefx-0.5-clip-inset.patch`); regression test
+  `tests/test-border-ring-corner.lua`
+
 - A client with per-corner rounded corners no longer keeps its bottom-left
   corner square: the crop's bottom-left arc centre used the top-left radius
   (`rounded_crop_pixels`)

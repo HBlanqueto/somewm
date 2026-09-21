@@ -2,6 +2,9 @@
 url = https://github.com/wlrfx/scenefx.git
 revision = 0.5
 depth = 1
+# Keep thin content that hugs a rounded clipped region (the window border
+# ring) from being erased at ~45 degrees; see the patch header.
+diff_files = scenefx-0.5-clip-inset.patch
 
 [provide]
 dependency_names = scenefx-0.5

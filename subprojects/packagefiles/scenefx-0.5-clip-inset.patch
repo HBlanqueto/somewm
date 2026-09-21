@@ -1,0 +1,28 @@
+--- a/render/fx_renderer/fx_pass.c
++++ b/render/fx_renderer/fx_pass.c
+@@ -332,6 +332,13 @@
+ 		float left = fmax(corners->top_left, corners->bottom_left);
+ 		float right = fmax(corners->top_right, corners->bottom_right);
+ 
++		/* The shader applies the clipped region's exact (anti-aliased)
++		 * alpha; this pixman region only limits the rasterized area. The
++		 * largest area guaranteed to be fully inside the rounded cutout is
++		 * its inscribed rectangle, so inset by the full corner radius. A
++		 * smaller inset cuts into the corner arcs and erases content that
++		 * hugs the cutout edge (e.g. a 1px border ring loses the pixel at
++		 * ~45 degrees, leaving a chopped notch). */
+ 		pixman_region32_t user_clip_region;
+ 		pixman_region32_init_rect(
+ 			&user_clip_region,
+@@ -338,7 +345,7 @@
+-			clipped_region_box->x + (left * 0.3),
+-			clipped_region_box->y + (top * 0.3),
+-			fmax(clipped_region_box->width - (left + right) * 0.3, 0),
+-			fmax(clipped_region_box->height - (top + bottom) * 0.3, 0)
++			clipped_region_box->x + left,
++			clipped_region_box->y + top,
++			fmax(clipped_region_box->width - (left + right), 0),
++			fmax(clipped_region_box->height - (top + bottom), 0)
+ 		);
+ 		pixman_region32_subtract(clip_region, clip_region, &user_clip_region);
+ 		pixman_region32_fini(&user_clip_region);
