@@ -159,17 +159,30 @@ function tag.object.set_index(self, idx)
     -- screen.tags cannot be used as it depend on index
     local tmp_tags = raw_tags(scr)
 
-    -- sort the tags by index
+    -- Sort the tags by index. `table.sort` is not stable and, while a tag is
+    -- being added, its new index momentarily duplicates the index of the tag it
+    -- pushes back. Break ties with the raw tag order so the result does not
+    -- depend on the sort implementation.
+    local raw_order = {}
+    for i, t in ipairs(tmp_tags) do
+        raw_order[t] = i
+    end
     table.sort(tmp_tags, function(a, b)
-        local ia, ib = tag.getproperty(a, "index"), tag.getproperty(b, "index")
-        return (ia or math.huge) < (ib or math.huge)
+        local ia = tag.getproperty(a, "index") or math.huge
+        local ib = tag.getproperty(b, "index") or math.huge
+        if ia == ib then
+            return raw_order[a] < raw_order[b]
+        end
+        return ia < ib
     end)
 
     if (not idx) or (idx < 1) or (idx > #tmp_tags) then
         return
     end
 
-    local rm_index = nil
+    -- Default to "not in the list" so a tag that is missing from `raw_tags`
+    -- (i.e. its screen is not set yet) is still inserted and renumbered.
+    local rm_index = #tmp_tags + 1
 
     for i, t in ipairs(tmp_tags) do
         if t == self then
@@ -285,13 +298,21 @@ function tag.add(name, props)
 
     newtag.activated = true
 
+    -- Apply the screen explicitly, before the loop below. `set_index` resolves
+    -- the tag list through the tag screen (`raw_tags`); `pairs()` has no defined
+    -- order, so if `index` was applied before `screen` the new tag was missing
+    -- from that list and the renumber was skipped.
+    newtag.screen = properties.screen
+
     for k, v in pairs(properties) do
         -- `rawget` doesn't work on userdata, `:clients()` is the only relevant
         -- entry.
-        if k == "clients" or tag.object[k] then
-            newtag[k](newtag, v)
-        else
-            newtag[k] = v
+        if k ~= "screen" then
+            if k == "clients" or tag.object[k] then
+                newtag[k](newtag, v)
+            else
+                newtag[k] = v
+            end
         end
     end
 
