@@ -6319,7 +6319,7 @@ apply_geometry_to_wlroots(Client *c)
 				wlr_scene_node_set_enabled(&c->border[i]->node, true);
 			if (c->crop.ring && c->crop.ring_buf && !c->fullscreen)
 				wlr_scene_node_set_enabled(&c->crop.ring->node, true);
-			if (c->crop.innerline && c->crop.innerline_buf && !c->fullscreen)
+			if (client_crop_innerline_active(c))
 				wlr_scene_node_set_enabled(&c->crop.innerline->node, true);
 			if (c->shadow.tree)
 				wlr_scene_node_set_enabled(&c->shadow.tree->node, true);
@@ -6351,7 +6351,7 @@ apply_geometry_to_wlroots(Client *c)
 				wlr_scene_node_set_enabled(&c->border[i]->node, partially_visible);
 			if (c->crop.ring && c->crop.ring_buf && !c->fullscreen)
 				wlr_scene_node_set_enabled(&c->crop.ring->node, partially_visible);
-			if (c->crop.innerline && c->crop.innerline_buf && !c->fullscreen)
+			if (client_crop_innerline_active(c))
 				wlr_scene_node_set_enabled(&c->crop.innerline->node,
 					partially_visible);
 			if (c->shadow.tree)
@@ -6381,7 +6381,7 @@ apply_geometry_to_wlroots(Client *c)
 			wlr_scene_node_set_enabled(&c->border[i]->node, true);
 		if (c->crop.ring && c->crop.ring_buf && !c->fullscreen)
 			wlr_scene_node_set_enabled(&c->crop.ring->node, true);
-		if (c->crop.innerline && c->crop.innerline_buf && !c->fullscreen)
+		if (client_crop_innerline_active(c))
 			wlr_scene_node_set_enabled(&c->crop.innerline->node, true);
 		if (c->shadow.tree)
 			wlr_scene_node_set_enabled(&c->shadow.tree->node, true);
