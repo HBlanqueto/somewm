@@ -4436,6 +4436,32 @@ luaA_client_get_visual_offset(lua_State *L, client_t *c)
     return 1;
 }
 
+/** Bottom clip reduction for the focus-mode reveal, set once per transition to
+ * the final target height. Re-runs the surface clip immediately so the strip
+ * never bleeds during the animation. */
+static int
+luaA_client_set_visual_offset_clip(lua_State *L, client_t *c)
+{
+    int y = (int)luaL_checkinteger(L, -1);
+    if (y < 0)
+        y = 0;
+    if (c->visual_offset_clip == y)
+        return 0;
+    c->visual_offset_clip = y;
+    /* client_crop_config_changed() re-runs apply_geometry_to_wlroots(), which
+     * reads client_get_clip() (now reduced) and calls set_clip once. */
+    client_crop_config_changed(c);
+    luaA_object_emit_signal(L, -3, "property::visual_offset_clip", 0);
+    return 0;
+}
+
+static int
+luaA_client_get_visual_offset_clip(lua_State *L, client_t *c)
+{
+    lua_pushinteger(L, c->visual_offset_clip);
+    return 1;
+}
+
 static int
 luaA_client_set_icon(lua_State *L, client_t *c)
 {
@@ -5762,6 +5788,7 @@ client_class_setup(lua_State *L)
         { "maximized_horizontal", (lua_class_propfunc_t) luaA_client_set_maximized_horizontal, (lua_class_propfunc_t) luaA_client_get_maximized_horizontal, (lua_class_propfunc_t) luaA_client_set_maximized_horizontal },
         { "maximized_vertical", (lua_class_propfunc_t) luaA_client_set_maximized_vertical, (lua_class_propfunc_t) luaA_client_get_maximized_vertical, (lua_class_propfunc_t) luaA_client_set_maximized_vertical },
         { "visual_offset", (lua_class_propfunc_t) luaA_client_set_visual_offset, (lua_class_propfunc_t) luaA_client_get_visual_offset, (lua_class_propfunc_t) luaA_client_set_visual_offset },
+        { "visual_offset_clip", (lua_class_propfunc_t) luaA_client_set_visual_offset_clip, (lua_class_propfunc_t) luaA_client_get_visual_offset_clip, (lua_class_propfunc_t) luaA_client_set_visual_offset_clip },
         { "minimized", (lua_class_propfunc_t) luaA_client_set_minimized, (lua_class_propfunc_t) luaA_client_get_minimized, (lua_class_propfunc_t) luaA_client_set_minimized },
         { "modal", (lua_class_propfunc_t) luaA_client_set_modal, (lua_class_propfunc_t) luaA_client_get_modal, (lua_class_propfunc_t) luaA_client_set_modal },
         { "motif_wm_hints", NULL, (lua_class_propfunc_t) luaA_client_get_motif_wm_hints, NULL },

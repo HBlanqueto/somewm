@@ -172,6 +172,14 @@ client_get_clip(Client *c, struct wlr_box *clip)
 	if (cw < 1) cw = 1;
 	if (ch < 1) ch = 1;
 
+	/* Focus-mode reveal: the window slid down by the visual offset; hide the
+	 * strip that went past the workarea at the bottom. Set once per transition
+	 * (c->visual_offset_clip) so the clip never animates per frame. */
+	if (c->visual_offset_clip > 0) {
+		ch -= c->visual_offset_clip;
+		if (ch < 1) ch = 1;
+	}
+
 	*clip = (struct wlr_box){
 		.x = 0,
 		.y = 0,

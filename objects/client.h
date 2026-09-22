@@ -299,6 +299,11 @@ struct client_t
       * scene tree is shifted down without touching c->geometry, so the client
       * is never reconfigured. Always >= 0. */
     int visual_offset_y;
+    /** Clip reduction (px) applied to the bottom of the client surface while
+      * the visual offset is active: the strip that slid past the workarea is
+      * not drawn. Set once per reveal/hide transition to the target height, so
+      * the strip never bleeds during the animation. 0 = full height. */
+    int visual_offset_clip;
     /** True if the client is above others */
     bool above;
     /** True if the client is below others */
