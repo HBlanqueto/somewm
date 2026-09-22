@@ -5161,7 +5161,7 @@ mapnotify(struct wl_listener *listener, void *data)
 		 * lock) still covers them. stack_refresh() skips unmanaged
 		 * clients so this placement is preserved. */
 		wlr_scene_node_reparent(&c->scene->node, layers[LyrOverlay]);
-		wlr_scene_node_set_position(&c->scene->node, c->geometry.x, c->geometry.y);
+		client_apply_scene_offset(c);
 		client_set_size(c, c->geometry.width, c->geometry.height);
 		if (client_wants_focus(c)) {
 			focusclient(c, 1);
@@ -6201,8 +6201,10 @@ apply_geometry_to_wlroots(Client *c)
 	frame_w = c->geometry.width + 2 * c->bw;
 	frame_h = c->geometry.height + 2 * c->bw;
 
-	/* Update scene-graph position and borders */
-	wlr_scene_node_set_position(&c->scene->node, c->geometry.x, c->geometry.y);
+	/* Update scene-graph position and borders. The focus-mode visual offset
+	 * is applied here so every root reposition (resize, arrange, clip update)
+	 * keeps the whole tree in sync. */
+	client_apply_scene_offset(c);
 	/* Offset scene_surface by titlebar sizes (titlebars occupy space in geometry) */
 	wlr_scene_node_set_position(&c->scene_surface->node, c->bw + titlebar_left, c->bw + titlebar_top);
 	/* popups tracks scene_surface's offset exactly, so popups stay correctly
@@ -8646,7 +8648,8 @@ configurex11(struct wl_listener *listener, void *data)
 		return;
 	}
 	if (client_is_unmanaged(c)) {
-		wlr_scene_node_set_position(&c->scene->node, event->x, event->y);
+		wlr_scene_node_set_position(&c->scene->node, event->x,
+				event->y + c->visual_offset_y);
 		wlr_xwayland_surface_configure(c->surface.xwayland,
 				event->x, event->y, event->width, event->height);
 		return;

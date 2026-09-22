@@ -295,6 +295,10 @@ struct client_t
       * the user
       */
     bool maximized;
+    /** Visual-only vertical offset (px) for the focus-mode reveal: the whole
+      * scene tree is shifted down without touching c->geometry, so the client
+      * is never reconfigured. Always >= 0. */
+    int visual_offset_y;
     /** True if the client is above others */
     bool above;
     /** True if the client is below others */
@@ -383,6 +387,19 @@ struct client_t
     /** Motif WM hints, with an additional MWM_HINTS_AWESOME_SET bit */
     motif_wm_hints_t motif_wm_hints;
 };
+
+/** Position the client's whole scene tree at its geometry plus the visual
+ * focus-mode offset. Surface, subsurfaces, xdg popups, borders, shadow, crop
+ * ring and innerline all hang off c->scene, so one root move carries them all.
+ * c->geometry is never touched: no configure is sent, only rendering moves. */
+static inline void
+client_apply_scene_offset(Client *c)
+{
+    if (!c || !c->scene)
+        return;
+    wlr_scene_node_set_position(&c->scene->node,
+        c->geometry.x, c->geometry.y + c->visual_offset_y);
+}
 
 /* Note: Client and client_t are both forward-declared in somewm_types.h
  * Client = wlroots-level client struct (somewm.c)

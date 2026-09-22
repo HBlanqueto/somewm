@@ -4411,6 +4411,31 @@ luaA_client_set_maximized_vertical(lua_State *L, client_t *c)
     return 0;
 }
 
+/** Visual-only vertical offset for the focus-mode reveal. Positive values
+ * move the whole scene tree down without changing c->geometry. */
+static int
+luaA_client_set_visual_offset(lua_State *L, client_t *c)
+{
+    /* Only ever push the window down: a negative value would pull it above the
+     * output and is never wanted here. */
+    int y = (int)luaL_checkinteger(L, -1);
+    if (y < 0)
+        y = 0;
+    if (c->visual_offset_y == y)
+        return 0;
+    c->visual_offset_y = y;
+    client_apply_scene_offset(c);
+    luaA_object_emit_signal(L, -3, "property::visual_offset", 0);
+    return 0;
+}
+
+static int
+luaA_client_get_visual_offset(lua_State *L, client_t *c)
+{
+    lua_pushinteger(L, c->visual_offset_y);
+    return 1;
+}
+
 static int
 luaA_client_set_icon(lua_State *L, client_t *c)
 {
@@ -5736,6 +5761,7 @@ client_class_setup(lua_State *L)
         { "maximized", (lua_class_propfunc_t) luaA_client_set_maximized, (lua_class_propfunc_t) luaA_client_get_maximized, (lua_class_propfunc_t) luaA_client_set_maximized },
         { "maximized_horizontal", (lua_class_propfunc_t) luaA_client_set_maximized_horizontal, (lua_class_propfunc_t) luaA_client_get_maximized_horizontal, (lua_class_propfunc_t) luaA_client_set_maximized_horizontal },
         { "maximized_vertical", (lua_class_propfunc_t) luaA_client_set_maximized_vertical, (lua_class_propfunc_t) luaA_client_get_maximized_vertical, (lua_class_propfunc_t) luaA_client_set_maximized_vertical },
+        { "visual_offset", (lua_class_propfunc_t) luaA_client_set_visual_offset, (lua_class_propfunc_t) luaA_client_get_visual_offset, (lua_class_propfunc_t) luaA_client_set_visual_offset },
         { "minimized", (lua_class_propfunc_t) luaA_client_set_minimized, (lua_class_propfunc_t) luaA_client_get_minimized, (lua_class_propfunc_t) luaA_client_set_minimized },
         { "modal", (lua_class_propfunc_t) luaA_client_set_modal, (lua_class_propfunc_t) luaA_client_get_modal, (lua_class_propfunc_t) luaA_client_set_modal },
         { "motif_wm_hints", NULL, (lua_class_propfunc_t) luaA_client_get_motif_wm_hints, NULL },
