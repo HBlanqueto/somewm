@@ -2893,7 +2893,8 @@ touchnotifymotion(struct wl_listener *listener, void *data)
 		return;
 
 	sx = lx - (l ? l->scene->node.x : c->geometry.x);
-	sy = ly - (l ? l->scene->node.y : c->geometry.y);
+	sy = ly - (l ? l->scene->node.y
+		: c->geometry.y + c->visual_offset_y);
 
 	wlr_seat_touch_notify_motion(seat, event->time_msec, event->touch_id, sx, sy);
 }
@@ -3467,7 +3468,8 @@ cursorwarptohint(void)
 
 	toplevel_from_wlr_surface(active_constraint->surface, &c, NULL);
 	if (c && active_constraint->current.cursor_hint.enabled) {
-		wlr_cursor_warp(cursor, NULL, sx + c->geometry.x + c->bw, sy + c->geometry.y + c->bw);
+		wlr_cursor_warp(cursor, NULL, sx + c->geometry.x + c->bw,
+			sy + c->geometry.y + c->bw + c->visual_offset_y);
 		wlr_seat_pointer_warp(active_constraint->seat, sx, sy);
 	}
 }
