@@ -309,7 +309,6 @@ struct client_t
       * the window sits below its geometry and restored to the visibility the
       * shadow config asked for when the offset returns to 0. */
     bool visual_shadow_suppressed;
-    bool visual_shadow_was_visible;
     /** True if the client is above others */
     bool above;
     /** True if the client is below others */
@@ -406,8 +405,9 @@ struct client_t
  *
  * While the client is visually below its geometry its shadow would bleed onto
  * a stacked monitor below and its bottom strip would steal input (the surface
- * clip is render-only). The shadow is hidden here and restored to the
- * visibility shadow_set_visible() was last asked for when the offset clears. */
+ * clip is render-only). The shadow node is disabled here while the offset is
+ * active and restored to the CURRENT requested visibility (shadow.user_visible)
+ * when it clears, so toggling the shadow while revealed is not overwritten. */
 static inline void
 client_apply_scene_offset(Client *c)
 {
@@ -418,14 +418,14 @@ client_apply_scene_offset(Client *c)
 
     if (c->shadow.tree) {
         if (c->visual_offset_y > 0) {
-            if (!c->visual_shadow_suppressed) {
-                c->visual_shadow_was_visible = c->shadow.user_visible;
-                shadow_set_visible(&c->shadow, false);
-                c->visual_shadow_suppressed = true;
-            }
-        } else if (c->visual_shadow_suppressed) {
-            shadow_set_visible(&c->shadow, c->visual_shadow_was_visible);
+            c->visual_shadow_suppressed = true;
+            if (c->shadow.tree->node.enabled)
+                wlr_scene_node_set_enabled(&c->shadow.tree->node, false);
+        } else {
             c->visual_shadow_suppressed = false;
+            bool want = c->shadow.user_visible && c->shadow.size_ok;
+            if (c->shadow.tree->node.enabled != want)
+                wlr_scene_node_set_enabled(&c->shadow.tree->node, want);
         }
     }
 }

@@ -6428,9 +6428,15 @@ apply_geometry_to_wlroots(Client *c)
 	 * commit-time mask re-linking lives in cropcommitnotify(). */
 	client_blur_update(c);
 
-	/* Wrap any surface buffer (re)created while the reveal offset is active. */
-	if (c->visual_offset_y > 0)
+	/* Re-assert the reveal offset after the monitor-clamp block above, which
+	 * toggles the shadow node by hand and would otherwise un-suppress it.
+	 * Then wrap any surface buffer (re)created while the offset is active.
+	 * Only for an active offset: at offset 0 the clamp block's own shadow
+	 * decisions (e.g. offscreen carousel tiles) must stand. */
+	if (c->visual_offset_y > 0) {
+		client_apply_scene_offset(c);
 		client_offset_input_apply(c);
+	}
 }
 
 void
