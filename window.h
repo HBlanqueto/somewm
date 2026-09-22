@@ -26,6 +26,12 @@ void client_crop_apply(Client *c);
 void client_crop_titlebar_buffer(Client *c, struct wlr_buffer *buffer, struct wlr_box area);
 void client_crop_config_changed(Client *c);
 void client_crop_release(Client *c);
+
+/* Focus-mode reveal: wrap/unwrap the toplevel surface buffers' input callback
+ * so the strip that slid past the monitor does not steal input (see
+ * somewm.c). Popups are never wrapped. */
+void client_offset_input_apply(Client *c);
+void client_offset_input_clear(Client *c);
 void cropcommitnotify(struct wl_listener *listener, void *data);
 void contentcommitnotify(struct wl_listener *listener, void *data);
 void client_crop_update_ring(Client *c, int frame_w, int frame_h);

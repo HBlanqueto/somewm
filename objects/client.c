@@ -3306,6 +3306,11 @@ client_unmanage(client_t *c, client_unmanage_t reason)
 {
     lua_State *L = globalconf_get_lua_State();
 
+    /* Focus-mode reveal: drop the input wrappers while the surface buffers
+     * still exist, so their callbacks are restored rather than freed under a
+     * dead pointer. */
+    client_offset_input_clear(c);
+
     /* Reset transient_for attributes of windows that might be referring to us */
     foreach(_tc, globalconf.clients)
     {
@@ -4425,6 +4430,10 @@ luaA_client_set_visual_offset(lua_State *L, client_t *c)
         return 0;
     c->visual_offset_y = y;
     client_apply_scene_offset(c);
+    if (c->visual_offset_y > 0)
+        client_offset_input_apply(c);
+    else
+        client_offset_input_clear(c);
     luaA_object_emit_signal(L, -3, "property::visual_offset", 0);
     return 0;
 }

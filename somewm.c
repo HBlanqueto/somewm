@@ -658,6 +658,7 @@ arrange(Monitor *m)
 		if (!visible && (c->visual_offset_y || c->visual_offset_clip)) {
 			c->visual_offset_y = 0;
 			c->visual_offset_clip = 0;
+			client_offset_input_clear(c);
 			client_crop_config_changed(c);
 		}
 	}
@@ -6209,6 +6210,7 @@ apply_geometry_to_wlroots(Client *c)
 			&& (c->visual_offset_y || c->visual_offset_clip)) {
 		c->visual_offset_y = 0;
 		c->visual_offset_clip = 0;
+		client_offset_input_clear(c);
 	}
 
 	/* Get titlebar sizes - they occupy space inside geometry.
@@ -6425,6 +6427,10 @@ apply_geometry_to_wlroots(Client *c)
 	/* Backdrop blur box/radii follow geometry, fullscreen and border state;
 	 * commit-time mask re-linking lives in cropcommitnotify(). */
 	client_blur_update(c);
+
+	/* Wrap any surface buffer (re)created while the reveal offset is active. */
+	if (c->visual_offset_y > 0)
+		client_offset_input_apply(c);
 }
 
 void
@@ -7154,6 +7160,7 @@ setmon(Client *c, Monitor *m, uint32_t newtags)
 	if (c->visual_offset_y || c->visual_offset_clip) {
 		c->visual_offset_y = 0;
 		c->visual_offset_clip = 0;
+		client_offset_input_clear(c);
 		client_crop_config_changed(c);
 	}
 
@@ -8458,6 +8465,144 @@ drawin_accepts_input_at(drawin_t *d, double local_x, double local_y)
 	return (data[byte_offset] >> bit_offset) & 1;
 }
 
+/* ------------------------------------------------------------------------
+ * Focus-mode reveal: input in the strip that slid past the monitor.
+ *
+ * The surface clip is render-only (wlroots scene_buffer_point_accepts_input
+ * only offsets coordinates; it never consults the clip extents), so the
+ * offset window would still accept pointer/touch events in the strip below
+ * its visible geometry and steal them from a stacked monitor. Rejecting at
+ * the layer level in xytonode() was wrong: it skipped every other client in
+ * the same layer. Instead wrap each toplevel surface buffer's
+ * point_accepts_input -- returning false there makes wlr_scene_node_at()
+ * continue to the next node below, within the same tree.
+ *
+ * Popups are deliberately excluded: they live under c->popups, a sibling of
+ * c->scene_surface, and must stay fully interactive.
+ * ---------------------------------------------------------------------- */
+
+struct visual_input_wrap {
+	struct wl_list link;
+	Client *client;
+	struct wlr_scene_buffer *buffer;
+	wlr_scene_buffer_point_accepts_input_func_t original;
+	struct wl_listener destroy;
+};
+
+static struct wl_list visual_input_wraps;
+static bool visual_input_wraps_ready = false;
+
+static void
+visual_input_wraps_ensure(void)
+{
+	if (!visual_input_wraps_ready) {
+		wl_list_init(&visual_input_wraps);
+		visual_input_wraps_ready = true;
+	}
+}
+
+static bool
+client_offset_point_accepts_input(struct wlr_scene_buffer *buffer,
+		double *sx, double *sy)
+{
+	struct wlr_scene_surface *scene_surface =
+		wlr_scene_surface_try_from_buffer(buffer);
+	if (!scene_surface)
+		return true;
+
+	Client *c = NULL;
+	if (toplevel_from_wlr_surface(scene_surface->surface, &c, NULL) < 0 || !c)
+		return true;
+
+	if (c->visual_offset_y > 0) {
+		int lx, ly;
+		if (wlr_scene_node_coords(&buffer->node, &lx, &ly)) {
+			double gx = lx + *sx;
+			double gy = ly + *sy;
+			/* Visible area: the client's area intersected with its
+			 * monitor workarea (the monitor bottom is the cutoff, not
+			 * geometry.bottom + offset). */
+			struct wlr_box visible;
+			if (!wlr_box_intersection(&visible, &c->geometry, &c->mon->w))
+				return false;
+			if (gx < visible.x || gx >= visible.x + visible.width
+					|| gy < visible.y || gy >= visible.y + visible.height)
+				return false;
+		}
+	}
+
+	struct visual_input_wrap *w;
+	wl_list_for_each(w, &visual_input_wraps, link) {
+		if (w->buffer == buffer)
+			return w->original ? w->original(buffer, sx, sy) : true;
+	}
+	return true;
+}
+
+static void
+visual_input_wrap_destroy(struct wl_listener *listener, void *data)
+{
+	struct visual_input_wrap *w = wl_container_of(listener, w, destroy);
+	wl_list_remove(&w->destroy.link);
+	wl_list_remove(&w->link);
+	free(w);
+}
+
+static void
+visual_input_wrap_iter(struct wlr_scene_buffer *buffer, int sx, int sy, void *data)
+{
+	(void)sx;
+	(void)sy;
+	Client *c = data;
+
+	struct visual_input_wrap *w;
+	wl_list_for_each(w, &visual_input_wraps, link) {
+		if (w->buffer == buffer)
+			return;
+	}
+
+	struct visual_input_wrap *nw = calloc(1, sizeof(*nw));
+	if (!nw)
+		return;
+	nw->client = c;
+	nw->buffer = buffer;
+	nw->original = buffer->point_accepts_input;
+	nw->destroy.notify = visual_input_wrap_destroy;
+	wl_list_insert(&visual_input_wraps, &nw->link);
+	wl_signal_add(&buffer->node.events.destroy, &nw->destroy);
+	buffer->point_accepts_input = client_offset_point_accepts_input;
+}
+
+void
+client_offset_input_apply(Client *c)
+{
+	if (!c || !c->scene_surface || c->visual_offset_y <= 0)
+		return;
+	visual_input_wraps_ensure();
+	wlr_scene_node_for_each_buffer(&c->scene_surface->node,
+		visual_input_wrap_iter, c);
+}
+
+void
+client_offset_input_clear(Client *c)
+{
+	if (!c || !visual_input_wraps_ready)
+		return;
+
+	struct visual_input_wrap *w, *tmp;
+	wl_list_for_each_safe(w, tmp, &visual_input_wraps, link) {
+		if (w->client != c)
+			continue;
+		if (w->buffer
+				&& w->buffer->point_accepts_input == client_offset_point_accepts_input) {
+			w->buffer->point_accepts_input = w->original;
+		}
+		wl_list_remove(&w->destroy.link);
+		wl_list_remove(&w->link);
+		free(w);
+	}
+}
+
 /* WAYLAND-DEVIATION: pdrawable parameter for titlebar hit-testing
  * AwesomeWM: Uses client_get_drawable_offset() to iterate titlebar geometries
  * after receiving a frame_window event (objects/client.c:3501).
@@ -8553,18 +8698,6 @@ xytonode(double x, double y, struct wlr_surface **psurface,
 			if (!pnode->parent)
 				break;
 			pnode = &pnode->parent->node;
-		}
-		/* Focus-mode reveal: the window is visually offset below its layout
-		 * geometry, so the strip past geometry.bottom is not part of it. The
-		 * surface clip is render-only, so reject the hit here and fall through
-		 * to the layer below instead of letting the offset window steal
-		 * pointer/touch input from a stacked monitor. */
-		if (c && c->visual_offset_y > 0
-				&& y >= (double)(c->geometry.y + c->geometry.height)) {
-			c = NULL;
-			surface = NULL;
-			titlebar_drawable = NULL;
-			continue;
 		}
 		/* pnode->data is whatever that node's owner stored: a live
 		 * client, a live layer surface, or a pointer whose owner is
