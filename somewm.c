@@ -653,6 +653,13 @@ arrange(Monitor *m)
 		visible = client_isvisible(c);
 		wlr_scene_node_set_enabled(&c->scene->node, visible);
 		client_set_suspended(c, !visible);
+		/* Failsafe: a client banned by a tag switch drops its offset so it
+		 * cannot come back offset on the next tag. */
+		if (!visible && (c->visual_offset_y || c->visual_offset_clip)) {
+			c->visual_offset_y = 0;
+			c->visual_offset_clip = 0;
+			client_crop_config_changed(c);
+		}
 	}
 
 	/* Safety check: if not initialized yet, skip Lua arrange but scene nodes are already updated */
@@ -6194,6 +6201,16 @@ apply_geometry_to_wlroots(Client *c)
 	if (!c->scene || !client_surface(c) || !client_surface(c)->mapped)
 		return;
 
+	/* Failsafe: only a maximized, non-fullscreen client may carry the
+	 * focus-mode offset. Anything else drops it here, so a missed Lua reset
+	 * (unmaximize, fullscreen, unmanage, tag switch, reload) can never leave a
+	 * window stuck below the bar. */
+	if ((!c->maximized || c->fullscreen)
+			&& (c->visual_offset_y || c->visual_offset_clip)) {
+		c->visual_offset_y = 0;
+		c->visual_offset_clip = 0;
+	}
+
 	/* Get titlebar sizes - they occupy space inside geometry.
 	 * When fullscreen, ignore titlebar sizes - surface should cover entire geometry. */
 	titlebar_left = c->fullscreen ? 0 : c->titlebar[CLIENT_TITLEBAR_LEFT].size;
@@ -7128,6 +7145,13 @@ setmon(Client *c, Monitor *m, uint32_t newtags)
 
 	c->mon = m;
 	c->prev = c->geometry;
+
+	/* Failsafe: a screen change drops any focus-mode visual offset. */
+	if (c->visual_offset_y || c->visual_offset_clip) {
+		c->visual_offset_y = 0;
+		c->visual_offset_clip = 0;
+		client_crop_config_changed(c);
+	}
 
 	/* Update c->screen to match c->mon for Lua property access */
 	c->screen = luaA_screen_get_by_monitor(L, m);
