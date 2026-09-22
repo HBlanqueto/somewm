@@ -36,10 +36,16 @@ docs/*
 # Nix build output
 result
 
+# Local Nix state dir (NIX_STATE_DIR/NIX_STORE_DIR) & generated dev-shell wrapper
+/nix/
+.run-test
+
 # Locally-authored tests & repro helpers (kept out of the repo for now)
 tests/demo-bars-shadows.lua
 tests/demo-roundy-theme.lua
 tests/demo-shadow-corners.lua
+tests/test-autocolor-perf.lua
+tests/test-focus-space.lua
 tests/test-fractional-pattern-client.c
 tests/test-fresh-csd-placement.lua
 tests/test-innerline-follow.lua
