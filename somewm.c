@@ -6257,6 +6257,10 @@ apply_geometry_to_wlroots(Client *c)
 		}
 	}
 
+	/* The shadow tree is created lazily just above, so re-run the offset
+	 * helper to suppress it when the reveal offset is already active. */
+	client_apply_scene_offset(c);
+
 	/* Rounded corners: swap the square border rects for a rounded ring
 	 * (content and titlebars are cropped per-pixel, see client_crop_*).
 	 * Fullscreen disables rounding so no app pixels are cut. With SceneFX
@@ -8549,6 +8553,18 @@ xytonode(double x, double y, struct wlr_surface **psurface,
 			if (!pnode->parent)
 				break;
 			pnode = &pnode->parent->node;
+		}
+		/* Focus-mode reveal: the window is visually offset below its layout
+		 * geometry, so the strip past geometry.bottom is not part of it. The
+		 * surface clip is render-only, so reject the hit here and fall through
+		 * to the layer below instead of letting the offset window steal
+		 * pointer/touch input from a stacked monitor. */
+		if (c && c->visual_offset_y > 0
+				&& y >= (double)(c->geometry.y + c->geometry.height)) {
+			c = NULL;
+			surface = NULL;
+			titlebar_drawable = NULL;
+			continue;
 		}
 		/* pnode->data is whatever that node's owner stored: a live
 		 * client, a live layer surface, or a pointer whose owner is

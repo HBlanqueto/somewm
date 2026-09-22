@@ -304,6 +304,12 @@ struct client_t
       * not drawn. Set once per reveal/hide transition to the target height, so
       * the strip never bleeds during the animation. 0 = full height. */
     int visual_offset_clip;
+    /** Shadow suppression state while the reveal offset is active. The shadow
+      * is a decoration the surface clip cannot reach, so it is hidden while
+      * the window sits below its geometry and restored to the visibility the
+      * shadow config asked for when the offset returns to 0. */
+    bool visual_shadow_suppressed;
+    bool visual_shadow_was_visible;
     /** True if the client is above others */
     bool above;
     /** True if the client is below others */
@@ -396,7 +402,12 @@ struct client_t
 /** Position the client's whole scene tree at its geometry plus the visual
  * focus-mode offset. Surface, subsurfaces, xdg popups, borders, shadow, crop
  * ring and innerline all hang off c->scene, so one root move carries them all.
- * c->geometry is never touched: no configure is sent, only rendering moves. */
+ * c->geometry is never touched: no configure is sent, only rendering moves.
+ *
+ * While the client is visually below its geometry its shadow would bleed onto
+ * a stacked monitor below and its bottom strip would steal input (the surface
+ * clip is render-only). The shadow is hidden here and restored to the
+ * visibility shadow_set_visible() was last asked for when the offset clears. */
 static inline void
 client_apply_scene_offset(Client *c)
 {
@@ -404,6 +415,19 @@ client_apply_scene_offset(Client *c)
         return;
     wlr_scene_node_set_position(&c->scene->node,
         c->geometry.x, c->geometry.y + c->visual_offset_y);
+
+    if (c->shadow.tree) {
+        if (c->visual_offset_y > 0) {
+            if (!c->visual_shadow_suppressed) {
+                c->visual_shadow_was_visible = c->shadow.user_visible;
+                shadow_set_visible(&c->shadow, false);
+                c->visual_shadow_suppressed = true;
+            }
+        } else if (c->visual_shadow_suppressed) {
+            shadow_set_visible(&c->shadow, c->visual_shadow_was_visible);
+            c->visual_shadow_suppressed = false;
+        }
+    }
 }
 
 /* Note: Client and client_t are both forward-declared in somewm_types.h
