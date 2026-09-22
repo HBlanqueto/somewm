@@ -30,6 +30,8 @@ void cropcommitnotify(struct wl_listener *listener, void *data);
 void contentcommitnotify(struct wl_listener *listener, void *data);
 void client_crop_update_ring(Client *c, int frame_w, int frame_h);
 void client_crop_update_innerline(Client *c);
+/* Whether the inner hairline is enabled and has a live buffer (see window.c). */
+bool client_crop_innerline_active(Client *c);
 
 /* Inner hairline (macOS-style line inside the border) */
 unsigned int get_border_inner_width(void);

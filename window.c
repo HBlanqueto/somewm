@@ -931,6 +931,19 @@ innerline_point_accepts_input(struct wlr_scene_buffer *buffer, double *sx,
 	return false;
 }
 
+/* Whether the inner hairline belongs on screen right now: enabled for this
+ * client, a positive width, not fullscreen, and backed by a rendered buffer
+ * at the current geometry. client_crop_update_innerline() hides the node when
+ * this is false; callers that re-enable nodes from outside it (the per-monitor
+ * clip passes in apply_geometry_to_wlroots) MUST gate on this too, otherwise a
+ * stale buffer gets re-enabled and ghost-paints the old frame. */
+bool
+client_crop_innerline_active(Client *c)
+{
+	return c->border_inner_enabled && c->border_inner_width > 0
+		&& !c->fullscreen && c->crop.innerline && c->crop.innerline_buf;
+}
+
 /* macOS-style inner hairline: a thin line drawn around the whole window,
  * hugging the union contour of content and titlebars (the visible rounded
  * shape formed by the crop). Pure decoration - it changes no geometry and
