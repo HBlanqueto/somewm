@@ -383,7 +383,7 @@ emit_slide_end(void)
 }
 
 static void
-slide_finish(void)
+slide_teardown(bool emit_signal)
 {
 	if (!slide.active)
 		return;
@@ -449,7 +449,17 @@ slide_finish(void)
 
 	motionnotify(0, NULL, 0, 0, 0, 0);
 
-	emit_slide_end();
+	if (emit_signal)
+		emit_slide_end();
+}
+
+/* Finish a slide and tell Lua. Emitted signals may run arbitrary config code,
+ * which is fine on the normal completion path but must never happen while a
+ * Lua state is being torn down (hot-reload uses the silent variant). */
+static void
+slide_finish(void)
+{
+	slide_teardown(true);
 }
 
 /* Read the tag's Lua-side index (tag._private.awful_tag_properties.index),
@@ -854,11 +864,12 @@ void
 slide_hot_reload(lua_State *L)
 {
 	(void)L;
-	/* Abort any running slide and drop the previous-selection snapshot, so
-	 * the post-reload first switch (or session restore) is treated as a
-	 * fresh baseline: instant, never a slide. */
+	/* Abort any running slide WITHOUT emitting slide_end: the Lua state is
+	 * being torn down, so no signal may run on it. Drop the previous-selection
+	 * snapshot so the post-reload first switch (or session restore) is treated
+	 * as a fresh baseline: instant, never a slide. */
 	if (slide.active)
-		slide_finish();
+		slide_teardown(false);
 	prev_selected_clear_all();
 	if (slide.timer)
 		wl_event_source_timer_update(slide.timer, 0);
