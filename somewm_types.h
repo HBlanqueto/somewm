@@ -179,6 +179,17 @@ typedef struct LayerSurface {
 
 	/* Lua object reference (NULL if not managed by Lua) */
 	struct layer_surface_t *lua_object;
+
+	/* Tag-slide: horizontal scene offset applied on top of the arranged
+	 * anchor while a slide runs (re-applied by arrangelayer() after every
+	 * layer configure so the bar never jumps). 0 outside a slide.
+	 * slide_anchor_x/y is the arranged anchor captured by arrangelayer()
+	 * right before the offset is added, so the slide driver can track a
+	 * mid-slide re-arrange instead of relying on the position captured at
+	 * slide start. */
+	int slide_offset_x;
+	int slide_anchor_x;
+	int slide_anchor_y;
 } LayerSurface;
 
 /* PointerConstraint structure */

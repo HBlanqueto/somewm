@@ -749,6 +749,16 @@ arrangelayer(Monitor *m, struct wl_list *list, struct wlr_box *usable_area, int 
 			continue;
 
 		wlr_scene_layer_surface_v1_configure(l->scene_layer, &full_area, usable_area);
+		/* Record the arranged anchor, then re-apply any tag-slide horizontal
+		 * offset on top of it. A slide moves the bar with the desktops, so a
+		 * mid-slide layer configure (any commit on this monitor) must not
+		 * snap it back to the anchor; the anchor is captured fresh each time
+		 * so the slide driver can follow a mid-slide re-arrange too. */
+		l->slide_anchor_x = l->scene->node.x;
+		l->slide_anchor_y = l->scene->node.y;
+		if (l->slide_offset_x)
+			wlr_scene_node_set_position(&l->scene->node,
+				l->slide_anchor_x + l->slide_offset_x, l->slide_anchor_y);
 		wlr_scene_node_set_position(&l->popups->node, l->scene->node.x, l->scene->node.y);
 	}
 }
