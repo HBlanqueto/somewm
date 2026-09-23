@@ -304,6 +304,10 @@ struct client_t
       * is never reconfigured. Can be positive or negative; the slide driver
       * owns it and restores it to 0 when the animation ends. */
     int visual_offset_x;
+    /** While an outgoing desktop is sliding away, the client's displaced
+      * surface must not take pointer input: its scene buffers are wrapped
+      * and this flag makes client_offset_point_accepts_input() reject them. */
+    bool slide_input_blocked;
     /** Clip reduction (px) applied to the bottom of the client surface while
       * the visual offset is active: the strip that slid past the workarea is
       * not drawn. Set once per reveal/hide transition to the target height, so

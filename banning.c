@@ -21,6 +21,7 @@
 
 #include "banning.h"
 #include "globalconf.h"
+#include "slide.h"
 #include "objects/client.h"
 
 /** Reban windows following current selected tags.
@@ -47,6 +48,12 @@ banning_need_update(void)
 void
 banning_refresh(void)
 {
+    /* The tag-slide driver takes over a 1->1 tag switch (starting the slide
+     * and deferring the real ban/unban to its end), and keeps the persistent
+     * focus-space backdrop in sync. */
+    if (slide_handle_banning())
+        return;
+
     if (!globalconf.need_lazy_banning)
         return;
 

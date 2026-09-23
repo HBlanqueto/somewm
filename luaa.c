@@ -26,6 +26,7 @@
 #include "objects/gesture.h"
 /* objects/awesome.h merged into this file */
 #include "animation.h"
+#include "slide.h"
 #include "ewmh.h"
 #include "objects/wibox.h"
 #include "objects/ipc.h"
@@ -3384,6 +3385,7 @@ luaA_register_state(lua_State *L)
 	luaA_root_setup(L);
 	button_class_setup(L); /* Setup button class (AwesomeWM class system) */
 	animation_setup(L);  /* Metatable for awesome.start_animation handles */
+	slide_setup(L);      /* Global `slide` config/control API */
 
 	/* Setup selection classes (must be before selection_setup) */
 	selection_getter_class_setup(L);
@@ -5144,6 +5146,9 @@ luaA_state_teardown_lua(lua_State *L, bool lua_safe)
 {
 	/* Cancel in-flight animations */
 	animation_hot_reload(L);
+
+	/* Abort any running tag slide and reset the switch baseline. */
+	slide_hot_reload(L);
 
 	/* Release every C-held ref into the state being closed. Each unrefs
 	 * against L and nowhere else: a ref taken here is an integer slot in

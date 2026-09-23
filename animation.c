@@ -54,6 +54,13 @@ apply_easing(int easing, double t)
 	}
 }
 
+/* Public easing evaluator, shared with the tag-slide driver (slide.c). */
+double
+animation_ease(int easing, double t)
+{
+	return apply_easing(easing, t);
+}
+
 static int
 parse_easing(const char *str)
 {

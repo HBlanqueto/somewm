@@ -101,6 +101,7 @@
 #include "wlr_compat.h"
 #include "nested_inhibitor.h"
 #include "globalconf.h"        /* Global configuration structure (AwesomeWM pattern) */
+#include "slide.h"             /* Tag-switch slide driver */
 #include "window.h"
 #include "event_queue.h"
 #include "event.h"
@@ -643,23 +644,27 @@ arrange(Monitor *m)
 
 	/* WAYLAND-SPECIFIC: Always update scene node visibility, even during initialization.
 	 * Unlike X11 where windows are visible by default, Wayland scene nodes start disabled.
-	 * This MUST run before any early returns to ensure clients become visible. */
-	foreach(client, globalconf.clients) {
-		bool visible;
-		c = *client;
-		if (!c->mon || c->mon != m || !c->scene)
-			continue;
+	 * This MUST run before any early returns to ensure clients become visible.
+	 * During a tag slide the slide driver owns visibility (outgoing clients
+	 * stay enabled until the animation ends), so skip the whole loop. */
+	if (!slide_active_on(m)) {
+		foreach(client, globalconf.clients) {
+			bool visible;
+			c = *client;
+			if (!c->mon || c->mon != m || !c->scene)
+				continue;
 
-		visible = client_isvisible(c);
-		wlr_scene_node_set_enabled(&c->scene->node, visible);
-		client_set_suspended(c, !visible);
-		/* Failsafe: a client banned by a tag switch drops its offset so it
-		 * cannot come back offset on the next tag. */
-		if (!visible && (c->visual_offset_y || c->visual_offset_clip)) {
-			c->visual_offset_y = 0;
-			c->visual_offset_clip = 0;
-			client_offset_input_clear(c);
-			client_crop_config_changed(c);
+			visible = client_isvisible(c);
+			wlr_scene_node_set_enabled(&c->scene->node, visible);
+			client_set_suspended(c, !visible);
+			/* Failsafe: a client banned by a tag switch drops its offset so it
+			 * cannot come back offset on the next tag. */
+			if (!visible && (c->visual_offset_y || c->visual_offset_clip)) {
+				c->visual_offset_y = 0;
+				c->visual_offset_clip = 0;
+				client_offset_input_clear(c);
+				client_crop_config_changed(c);
+			}
 		}
 	}
 
@@ -707,13 +712,25 @@ arrange(Monitor *m)
 fallback:
 	/* Scene node visibility already updated at function start (Wayland-specific requirement) */
 
-	/* Update fullscreen background */
-	c = focustop(m);
-	wlr_scene_node_set_enabled(&m->fullscreen_bg->node,
-		c && c->fullscreen);
+	/* Update fullscreen background (kept hidden while a slide runs: a static
+	 * fullscreen black rect would cover the incoming desktop sliding in) */
+	if (!slide_active_on(m)) {
+		c = focustop(m);
+		wlr_scene_node_set_enabled(&m->fullscreen_bg->node,
+			c && c->fullscreen);
+	}
 
 	motionnotify(0, NULL, 0, 0, 0, 0);
 	some_recompute_idle_inhibit();
+}
+
+/* Tag slide: toggle the root background rect (static here). Hidden during a
+ * slide so the scene clear color (black) shows around the desktops. */
+void
+some_slide_set_root_bg_visible(bool visible)
+{
+	if (root_bg)
+		wlr_scene_node_set_enabled(&root_bg->node, visible);
 }
 
 void
@@ -6080,6 +6097,12 @@ rendermon(struct wl_listener *listener, void *data)
 			goto skip;
 	}
 
+	/* Drive the tag slide at vsync: advance it, then commit the moved scene
+	 * nodes below. The moved nodes damage the scene, which schedules the
+	 * next frame, so the animation self-perpetuates at the output's rate. */
+	if (slide_active_on(m))
+		slide_tick();
+
 	/* needs_frame is true only when there is something to present;
 	 * wlr_scene_output_commit() returns true without presenting otherwise, so
 	 * sample it first to count only real presents. */
@@ -6799,6 +6822,10 @@ some_refresh(void)
 	 * client geometry will have their changes applied by client_refresh()
 	 * in the same cycle. */
 	animation_tick_all();
+
+	/* Tag slide: output frame events are the primary driver (rendermon);
+	 * this time-based fallback covers outputs whose frame events stall. */
+	slide_tick();
 
 	/* Step 2: Refresh drawins (wibox/panels) FIRST - matches AwesomeWM order
 	 * AwesomeWM calls drawin_refresh() BEFORE client_refresh() in awesome_refresh().
@@ -7669,6 +7696,9 @@ setup(void)
 	/* Initialize animation subsystem. The handle metatable is registered per
 	 * state by luaA_register_state, so only the event-loop side is set up here. */
 	animation_init(event_loop);
+
+	/* Tag-switch slide driver (event-loop side; Lua API per state). */
+	slide_init();
 
 	/* Initialize wallpaper cache (must be AFTER luaA_init which zeroes globalconf) */
 	wallpaper_cache_init();
@@ -8543,6 +8573,11 @@ client_offset_point_accepts_input(struct wlr_scene_buffer *buffer,
 	if (toplevel_from_wlr_surface(scene_surface->surface, &c, NULL) < 0 || !c)
 		return true;
 
+	/* A desktop sliding away must not take clicks: the whole client is
+	 * rejected while it is displaced. */
+	if (c->slide_input_blocked)
+		return false;
+
 	if (c->visual_offset_y > 0) {
 		int lx, ly;
 		if (wlr_scene_node_coords(&buffer->node, &lx, &ly)) {
@@ -8629,6 +8664,25 @@ client_offset_input_clear(Client *c)
 		wl_list_remove(&w->destroy.link);
 		wl_list_remove(&w->link);
 		free(w);
+	}
+}
+
+/* Tag slide: while the outgoing desktop is displaced, block pointer input on
+ * its clients so clicks land on the incoming desktop. Reuses the same scene
+ * buffer wrapping as the reveal, with the block keyed on slide_input_blocked.
+ * Clearing both unblocks and removes the wraps. */
+void
+client_slide_input_apply(Client *c, bool blocked)
+{
+	if (!c || !c->scene_surface)
+		return;
+	c->slide_input_blocked = blocked;
+	if (blocked) {
+		visual_input_wraps_ensure();
+		wlr_scene_node_for_each_buffer(&c->scene_surface->node,
+			visual_input_wrap_iter, c);
+	} else {
+		client_offset_input_clear(c);
 	}
 }
 

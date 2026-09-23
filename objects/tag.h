@@ -69,6 +69,9 @@ typedef struct tag_t
     float mfact;
     /** Number of master windows (0 = use monitor default) */
     int nmaster;
+    /** Desktop backdrop for this tag: TAG_BACKDROP_WALLPAPER (default) or
+      * TAG_BACKDROP_BLACK (focus spaces). Lua property `backdrop`. */
+    int backdrop;
 } tag_t;
 
 /* Declare tag_array_t type - must come AFTER tag_t typedef */

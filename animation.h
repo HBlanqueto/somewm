@@ -23,6 +23,9 @@ enum animation_easing {
     EASING_EASE_IN_OUT_CUBIC,
 };
 
+/** Evaluate an easing curve (shared with the tag-slide driver) */
+double animation_ease(int easing, double t);
+
 /** Initialize the animation subsystem (call once at startup) */
 void animation_init(struct wl_event_loop *loop);
 

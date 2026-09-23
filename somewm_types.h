@@ -104,6 +104,7 @@ struct Monitor {
 	struct wlr_output *wlr_output;
 	struct wlr_scene_output *scene_output;
 	struct wlr_scene_rect *fullscreen_bg; /* See createmon() for info */
+	struct wlr_scene_rect *black_bg; /* Persistent focus-space backdrop (LyrBg) */
 	struct wl_listener frame;
 	struct wl_listener destroy;
 	struct wl_listener request_state;

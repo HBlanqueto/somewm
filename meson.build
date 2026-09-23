@@ -501,6 +501,7 @@ somewm_sources = [
   'mousegrabber.c',
   'gesture.c',
   'animation.c',
+  'slide.c',
   'selection.c',
   'pam_auth.c',
   'nested_inhibitor.c',

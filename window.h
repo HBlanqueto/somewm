@@ -32,6 +32,9 @@ void client_crop_release(Client *c);
  * somewm.c). Popups are never wrapped. */
 void client_offset_input_apply(Client *c);
 void client_offset_input_clear(Client *c);
+/* Tag slide: block (or restore) pointer input on a client while its desktop
+ * is sliding out. Uses the same scene-buffer wrap machinery. */
+void client_slide_input_apply(Client *c, bool blocked);
 void cropcommitnotify(struct wl_listener *listener, void *data);
 void contentcommitnotify(struct wl_listener *listener, void *data);
 void client_crop_update_ring(Client *c, int frame_w, int frame_h);

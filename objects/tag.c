@@ -16,6 +16,7 @@
 #include "client.h"
 #include "ewmh.h"
 #include "luaa.h"
+#include "slide.h"
 #include "common/luaclass.h"
 #include "common/luaobject.h"
 #include "common/lualib.h"
@@ -443,6 +444,39 @@ luaA_tag_set_nmaster(lua_State *L, tag_t *tag)
 	return 0;
 }
 
+/** Get tag backdrop property (desktop backdrop kind)
+ * \param L Lua state
+ * \param tag Tag object
+ * \return 1 (pushes "wallpaper" or "black")
+ */
+static int
+luaA_tag_get_backdrop(lua_State *L, tag_t *tag)
+{
+	lua_pushstring(L, tag->backdrop == TAG_BACKDROP_BLACK
+		? "black" : "wallpaper");
+	return 1;
+}
+
+/** Set tag backdrop property: "black" marks a focus-space tag whose selected
+ * desktop gets a solid black backdrop instead of the wallpaper (independent
+ * of the slide animation). Anything else resets to the wallpaper.
+ * \param L Lua state
+ * \param tag Tag object
+ * \return 0
+ */
+static int
+luaA_tag_set_backdrop(lua_State *L, tag_t *tag)
+{
+	const char *s = luaL_checkstring(L, -1);
+	tag->backdrop = (s && strcmp(s, "black") == 0)
+		? TAG_BACKDROP_BLACK : TAG_BACKDROP_WALLPAPER;
+	luaA_object_emit_signal(L, -3, "property::backdrop", 0);
+	/* The backdrop may change while the tag is selected (focus-space enter
+	 * on a reload sweep): refresh the persistent rect immediately. */
+	slide_backdrop_refresh_all();
+	return 0;
+}
+
 /** Create a new tag object from Lua
  * \param L Lua state
  * \return 1 (pushes new tag)
@@ -551,6 +585,7 @@ tag_class_setup(lua_State *L)
 		{ "screen", (lua_class_propfunc_t) luaA_tag_set_screen, (lua_class_propfunc_t) luaA_tag_get_screen, (lua_class_propfunc_t) luaA_tag_set_screen },
 		{ "mfact", (lua_class_propfunc_t) luaA_tag_set_mfact, (lua_class_propfunc_t) luaA_tag_get_mfact, (lua_class_propfunc_t) luaA_tag_set_mfact },
 		{ "nmaster", (lua_class_propfunc_t) luaA_tag_set_nmaster, (lua_class_propfunc_t) luaA_tag_get_nmaster, (lua_class_propfunc_t) luaA_tag_set_nmaster },
+		{ "backdrop", (lua_class_propfunc_t) luaA_tag_set_backdrop, (lua_class_propfunc_t) luaA_tag_get_backdrop, (lua_class_propfunc_t) luaA_tag_set_backdrop },
 	};
 	luaA_class_add_properties(&tag_class, properties, countof(properties));
 }
