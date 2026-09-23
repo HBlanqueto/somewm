@@ -35,7 +35,9 @@
 #include <time.h>
 
 #include <wlr/types/wlr_buffer.h>
+#include <wlr/types/wlr_layer_shell_v1.h>
 #include <wlr/types/wlr_output.h>
+#include <wlr/types/wlr_scene.h>
 
 /* Scene layers (defined in somewm.c) */
 extern struct wlr_scene_tree *layers[NUM_LAYERS];
@@ -90,6 +92,45 @@ void
 slide_set_gap_color(const float rgba[4])
 {
 	memcpy(slide_gap_color, rgba, sizeof(slide_gap_color));
+}
+
+/* ========================================================================
+ * Sliding layer surfaces (opt-in by layer-shell namespace)
+ *
+ * Only layer surfaces whose namespace is registered here (e.g. the bar)
+ * slide with the desktops: the real, live surface node moves with the
+ * incoming desktop while a FROZEN copy of its current buffers slides out
+ * with the outgoing desktop. The notch, dock and helper surfaces are never
+ * matched, so they stay fixed.
+ * ======================================================================== */
+
+#define SLIDE_MAX_LAYER_NS 8
+static char *slide_layer_ns[SLIDE_MAX_LAYER_NS];
+static int slide_layer_ns_count;
+
+void
+slide_set_sliding_layers(const char *const *namespaces, int count)
+{
+	int i;
+	for (i = 0; i < slide_layer_ns_count; i++)
+		free(slide_layer_ns[i]);
+	slide_layer_ns_count = 0;
+	if (count > SLIDE_MAX_LAYER_NS)
+		count = SLIDE_MAX_LAYER_NS;
+	for (i = 0; i < count; i++)
+		slide_layer_ns[slide_layer_ns_count++] = strdup(namespaces[i]);
+}
+
+static bool
+slide_layer_ns_match(const char *ns)
+{
+	int i;
+	if (!ns)
+		return false;
+	for (i = 0; i < slide_layer_ns_count; i++)
+		if (slide_layer_ns[i] && strcmp(slide_layer_ns[i], ns) == 0)
+			return true;
+	return false;
 }
 
 /* ========================================================================
@@ -198,6 +239,14 @@ struct slide_desktop {
 
 #define SLIDE_MAX_STATIC 16
 
+#define SLIDE_MAX_LAYERS 8
+struct slide_layer {
+	LayerSurface *l;                  /* the sliding layer surface */
+	struct wlr_scene_tree *frozen;    /* frozen copy of its buffers, or NULL */
+	int anchor_x, anchor_y;           /* last known arranged anchor */
+	struct wl_listener surface_destroy; /* clears ->l if the surface dies */
+};
+
 struct slide_state {
 	bool active;
 	Monitor *mon;
@@ -217,6 +266,8 @@ struct slide_state {
 	int static_bg_count;
 	bool wallpaper_visible;
 	bool root_bg_visible;
+	struct slide_layer layers[SLIDE_MAX_LAYERS];
+	int layers_count;
 	struct wl_event_source *timer; /* 1 ms fallback driver */
 	int frames;  /* tick frames of the current (or last) slide */
 	double last_apply;  /* monotonic time of the last applied frame */
@@ -325,6 +376,8 @@ slide_apply_desktop(struct slide_desktop *d, int offset)
 			slide.mon->m.x + offset, slide.mon->m.y);
 }
 
+static void slide_apply_layers(int off_out, int off_in);
+
 static void
 slide_apply(double eased)
 {
@@ -335,6 +388,7 @@ slide_apply(double eased)
 
 	slide_apply_desktop(&slide.out, off_out);
 	slide_apply_desktop(&slide.in, off_in);
+	slide_apply_layers(off_out, off_in);
 
 	/* The gap strip travels with the outgoing desktop's right edge, staying
 	 * exactly `slide_gap` px between the two desktops for the whole slide. */
@@ -347,6 +401,182 @@ slide_apply(double eased)
 	 * clients are skipped by the scene hit-test, so the incoming desktop (or
 	 * the fixed layer-shell surfaces) gets the pointer. */
 	motionnotify(0, NULL, 0, 0, 0, 0);
+}
+
+/* ========================================================================
+ * Sliding layer surfaces (the bar): real node moves in, frozen copy goes out
+ * ======================================================================== */
+
+/* The frozen copy must never take input: wlr_scene_node_at() skips buffers
+ * whose point_accepts_input callback rejects the point. */
+static bool
+slide_frozen_reject_input(struct wlr_scene_buffer *buffer, double *sx, double *sy)
+{
+	(void)buffer; (void)sx; (void)sy;
+	return false;
+}
+
+/* A layer surface's scene tree (l->scene) can hold the main surface buffer
+ * plus subsurfaces (Qt case). Clone every wlr_scene_buffer node into a new
+ * tree at the same relative position, sharing (locking) the same wlr_buffer:
+ * wlr_scene_buffer_create() takes its own reference, so the copy stays alive
+ * and shows the captured frame even if the client swaps its buffer, and
+ * destroying the copy node releases the reference exactly once. We never call
+ * wlr_buffer_drop() on a buffer we do not own. */
+static void
+slide_layer_frozen_clone(struct wlr_scene_node *src, struct wlr_scene_tree *dst,
+		int ox, int oy)
+{
+	struct wlr_scene_node *child;
+	if (src->type == WLR_SCENE_NODE_TREE) {
+		struct wlr_scene_tree *tree = wlr_scene_tree_from_node(src);
+		wl_list_for_each(child, &tree->children, link)
+			slide_layer_frozen_clone(child, dst, ox + src->x, oy + src->y);
+		return;
+	}
+	if (src->type != WLR_SCENE_NODE_BUFFER)
+		return;
+	{
+		struct wlr_scene_buffer *sb = wlr_scene_buffer_from_node(src);
+		struct wlr_scene_buffer *copy;
+		if (!sb || !sb->buffer)
+			return;
+		copy = wlr_scene_buffer_create(dst, sb->buffer); /* takes its own lock */
+		if (!copy)
+			return;
+		copy->src_box = sb->src_box;
+		wlr_scene_buffer_set_dest_size(copy, sb->dst_width, sb->dst_height);
+		wlr_scene_buffer_set_transform(copy, sb->transform);
+		wlr_scene_buffer_set_opacity(copy, sb->opacity);
+		wlr_scene_buffer_set_filter_mode(copy, sb->filter_mode);
+		copy->point_accepts_input = slide_frozen_reject_input;
+		wlr_scene_node_set_position(&copy->node, ox + src->x, oy + src->y);
+	}
+}
+
+/* Create a frozen copy of l's current buffers, positioned at l's current
+ * arranged anchor (the copy root is set to the anchor; the clones inside are
+ * relative to it). Placed just above the real bar node within the same layer
+ * tree, so it renders in the bar's z-band — below the fixed notch — and the
+ * desktops slide behind it. */
+static struct wlr_scene_tree *
+slide_layer_frozen_create(LayerSurface *l)
+{
+	struct wlr_scene_tree *frozen, *root_tree;
+	struct wlr_scene_node *child;
+
+	if (!l || !l->scene || !l->scene->node.parent)
+		return NULL;
+	frozen = wlr_scene_tree_create(l->scene->node.parent);
+	if (!frozen)
+		return NULL;
+	wlr_scene_node_set_position(&frozen->node, l->slide_anchor_x, l->slide_anchor_y);
+	root_tree = wlr_scene_tree_from_node(&l->scene->node);
+	wl_list_for_each(child, &root_tree->children, link)
+		slide_layer_frozen_clone(child, frozen, 0, 0);
+	wlr_scene_node_place_above(&frozen->node, &l->scene->node);
+	return frozen;
+}
+
+/* The sliding layer surface died mid-slide (client restarted): detach our
+ * listener (the surface's signal list is going away, so it must not be
+ * removed again from teardown) and clear the pointer. The frozen copy keeps
+ * its own buffer locks and can finish sliding. */
+static void
+slide_layer_surface_destroy(struct wl_listener *listener, void *data)
+{
+	struct slide_layer *sl = wl_container_of(listener, sl, surface_destroy);
+	(void)data;
+	wl_list_remove(&sl->surface_destroy.link);
+	wl_list_init(&sl->surface_destroy.link);
+	sl->l = NULL;
+}
+
+static void
+slide_layers_capture(Monitor *m)
+{
+	int li;
+	slide.layers_count = 0;
+	for (li = 0; li < 4; li++) {
+		LayerSurface *l;
+		wl_list_for_each(l, &m->layers[li], link) {
+			struct slide_layer *sl;
+			if (slide.layers_count >= SLIDE_MAX_LAYERS)
+				return;
+			if (!l->mapped || !l->scene || !l->layer_surface->namespace)
+				continue;
+			if (!slide_layer_ns_match(l->layer_surface->namespace))
+				continue;
+			sl = &slide.layers[slide.layers_count++];
+			sl->l = l;
+			sl->frozen = slide_layer_frozen_create(l);
+			sl->surface_destroy.notify = slide_layer_surface_destroy;
+			wl_signal_add(&l->layer_surface->events.destroy, &sl->surface_destroy);
+		}
+	}
+}
+
+/* Move the sliding layer surfaces. The real, live bar node follows the
+ * incoming desktop (offset_x like clients) and already shows the arriving
+ * workspace; the frozen copy of its outgoing buffers slides out with the
+ * outgoing desktop. Anchors come from the LAST arranged anchor (kept fresh by
+ * arrangelayer() mid-slide), so a mid-slide re-arrange is tracked instead of
+ * snapping back to the slide-start position. */
+static void
+slide_apply_layers(int off_out, int off_in)
+{
+	int i;
+	for (i = 0; i < slide.layers_count; i++) {
+		struct slide_layer *sl = &slide.layers[i];
+		LayerSurface *l = sl->l;
+
+		if (l && l->scene) {
+			/* Current arranged anchor (updated by arrangelayer() on every
+			 * configure, including mid-slide commits). */
+			sl->anchor_x = l->slide_anchor_x;
+			sl->anchor_y = l->slide_anchor_y;
+
+			/* Incoming desktop: real, live bar glides in. */
+			l->slide_offset_x = off_in;
+			wlr_scene_node_set_position(&l->scene->node,
+				sl->anchor_x + off_in, sl->anchor_y);
+			wlr_scene_node_set_position(&l->popups->node,
+				sl->anchor_x + off_in, sl->anchor_y);
+		}
+		/* If the surface died mid-slide, keep sliding the frozen copy from
+		 * the last known anchor; the real node is gone. */
+
+		/* Outgoing desktop: frozen copy slides out. */
+		if (sl->frozen)
+			wlr_scene_node_set_position(&sl->frozen->node,
+				sl->anchor_x + off_out, sl->anchor_y);
+	}
+}
+
+/* Restore the live bar to its arranged anchor (offset 0) and destroy the
+ * frozen copy. Safe whether the surface is still alive or was destroyed
+ * mid-slide (its destroy listener already removed itself). */
+static void
+slide_layers_teardown(void)
+{
+	int i;
+	for (i = 0; i < slide.layers_count; i++) {
+		struct slide_layer *sl = &slide.layers[i];
+		LayerSurface *l = sl->l;
+
+		if (!wl_list_empty(&sl->surface_destroy.link))
+			wl_list_remove(&sl->surface_destroy.link);
+		if (sl->frozen)
+			wlr_scene_node_destroy(&sl->frozen->node); /* releases buffer locks */
+		if (l && l->scene) {
+			l->slide_offset_x = 0;
+			wlr_scene_node_set_position(&l->scene->node,
+				l->slide_anchor_x, l->slide_anchor_y);
+			wlr_scene_node_set_position(&l->popups->node,
+				l->slide_anchor_x, l->slide_anchor_y);
+		}
+	}
+	slide.layers_count = 0;
 }
 
 /* ========================================================================
@@ -425,6 +655,11 @@ slide_teardown(bool emit_signal)
 	for (int i = 0; i < slide.static_bg_count; i++)
 		if (slide.static_bg[i])
 			wlr_scene_node_destroy(&slide.static_bg[i]->node);
+
+	/* Destroy the frozen bar copies and restore the live bars to their
+	 * arranged anchors (offset 0). Safe whether the surface is alive or was
+	 * destroyed mid-slide (its destroy listener already removed itself). */
+	slide_layers_teardown();
 
 	/* Restore the global scene visibility we took over for the slide. */
 	if (globalconf.wallpaper_buffer_node)
@@ -596,6 +831,13 @@ slide_start(Monitor *m, tag_t *old, int old_backdrop, int old_index, tag_t *new)
 				wallpaper_crop_create(&o->m);
 		}
 	}
+
+	/* Capture the sliding layer surfaces (the bar) and pre-position them at
+	 * the eased=0 offsets, the same as the clients above: the frozen copy
+	 * holds the outgoing desktop's bar in place, the real bar starts off to
+	 * the incoming side. */
+	slide_layers_capture(m);
+	slide_apply_layers(0, slide.direction * slide.distance);
 
 	/* Take over the global scene visibility: hide the shared wallpaper and
 	 * the root background so everything revealed around the desktops is
@@ -871,6 +1113,12 @@ slide_hot_reload(lua_State *L)
 	if (slide.active)
 		slide_teardown(false);
 	prev_selected_clear_all();
+	/* The namespace list is re-registered by the new rc.lua via
+	 * slide.set_sliding_layers(); free the old strings so a config that no
+	 * longer opts in cannot leave stale namespaces behind. */
+	for (int i = 0; i < slide_layer_ns_count; i++)
+		free(slide_layer_ns[i]);
+	slide_layer_ns_count = 0;
 	if (slide.timer)
 		wl_event_source_timer_update(slide.timer, 0);
 }
@@ -1000,6 +1248,24 @@ luaA_slide_get_frames(lua_State *L)
 	return 1;
 }
 
+static int
+luaA_slide_set_sliding_layers(lua_State *L)
+{
+	const char *names[SLIDE_MAX_LAYER_NS];
+	int count = 0;
+
+	if (!lua_istable(L, 1))
+		return luaL_argerror(L, 1, "expected a table of layer-shell namespaces");
+	lua_pushnil(L);
+	while (lua_next(L, 1) != 0 && count < SLIDE_MAX_LAYER_NS) {
+		if (lua_type(L, -1) == LUA_TSTRING)
+			names[count++] = lua_tostring(L, -1);
+		lua_pop(L, 1);
+	}
+	slide_set_sliding_layers(names, count);
+	return 0;
+}
+
 static const struct luaL_Reg slide_methods[] = {
 	{ "set_enabled", luaA_slide_set_enabled },
 	{ "enabled", luaA_slide_get_enabled },
@@ -1014,6 +1280,7 @@ static const struct luaL_Reg slide_methods[] = {
 	{ "set_progress", luaA_slide_set_progress },
 	{ "active", luaA_slide_get_active },
 	{ "frames", luaA_slide_get_frames },
+	{ "set_sliding_layers", luaA_slide_set_sliding_layers },
 	{ NULL, NULL }
 };
 

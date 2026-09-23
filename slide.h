@@ -65,6 +65,10 @@ void slide_set_duration(double seconds);
 void slide_set_easing(int easing);
 void slide_set_gap(int px);
 void slide_set_gap_color(const float rgba[4]);
+/* Layer-shell namespaces that slide with the desktops during a tag slide
+ * (e.g. the bar). Only matching surfaces are moved or frozen-copied; the
+ * notch, dock and helper surfaces stay fixed. */
+void slide_set_sliding_layers(const char *const *namespaces, int count);
 /* Direct progress hook for a future touchpad gesture: p in [0,1]. When set,
  * the driver uses it instead of the clock. */
 void slide_set_progress(double p);
