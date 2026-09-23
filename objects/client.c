@@ -5797,6 +5797,10 @@ client_class_setup(lua_State *L)
         { "maximized_horizontal", (lua_class_propfunc_t) luaA_client_set_maximized_horizontal, (lua_class_propfunc_t) luaA_client_get_maximized_horizontal, (lua_class_propfunc_t) luaA_client_set_maximized_horizontal },
         { "maximized_vertical", (lua_class_propfunc_t) luaA_client_set_maximized_vertical, (lua_class_propfunc_t) luaA_client_get_maximized_vertical, (lua_class_propfunc_t) luaA_client_set_maximized_vertical },
         { "visual_offset", (lua_class_propfunc_t) luaA_client_set_visual_offset, (lua_class_propfunc_t) luaA_client_get_visual_offset, (lua_class_propfunc_t) luaA_client_set_visual_offset },
+        /* The config drives the focus-mode reveal through the C field's own
+         * name (visual_offset_y); expose it under that name so those writes
+         * reach the C side instead of creating an inert Lua-side field. */
+        { "visual_offset_y", (lua_class_propfunc_t) luaA_client_set_visual_offset, (lua_class_propfunc_t) luaA_client_get_visual_offset, (lua_class_propfunc_t) luaA_client_set_visual_offset },
         { "visual_offset_clip", (lua_class_propfunc_t) luaA_client_set_visual_offset_clip, (lua_class_propfunc_t) luaA_client_get_visual_offset_clip, (lua_class_propfunc_t) luaA_client_set_visual_offset_clip },
         { "minimized", (lua_class_propfunc_t) luaA_client_set_minimized, (lua_class_propfunc_t) luaA_client_get_minimized, (lua_class_propfunc_t) luaA_client_set_minimized },
         { "modal", (lua_class_propfunc_t) luaA_client_set_modal, (lua_class_propfunc_t) luaA_client_get_modal, (lua_class_propfunc_t) luaA_client_set_modal },
