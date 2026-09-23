@@ -96,36 +96,47 @@ slide_set_gap_color(const float rgba[4])
  * Previous-selection snapshot (drives the 1->1 detection)
  * ======================================================================== */
 
+static int tag_lua_index(tag_t *t);
+
 struct prev_sel {
 	Monitor *m;
-	tag_t *tag;
+	tag_t *tag;   /* may dangle once a tag is deleted; never dereference it
+	               * unless tag_is_alive(); index/backdrop are snapshots */
+	int index;
+	int backdrop;
 };
 
 #define MAX_PREV_SEL 64
 static struct prev_sel prev_sel[MAX_PREV_SEL];
 static int prev_sel_count;
 
-static tag_t *
+static struct prev_sel *
 prev_selected_get(Monitor *m)
 {
 	for (int i = 0; i < prev_sel_count; i++)
 		if (prev_sel[i].m == m)
-			return prev_sel[i].tag;
+			return &prev_sel[i];
 	return NULL;
 }
 
 static void
 prev_selected_set(Monitor *m, tag_t *t)
 {
+	int index = t ? tag_lua_index(t) : -1;
+	int backdrop = t ? t->backdrop : TAG_BACKDROP_WALLPAPER;
 	for (int i = 0; i < prev_sel_count; i++) {
 		if (prev_sel[i].m == m) {
 			prev_sel[i].tag = t;
+			prev_sel[i].index = index;
+			prev_sel[i].backdrop = backdrop;
 			return;
 		}
 	}
 	if (prev_sel_count < MAX_PREV_SEL) {
 		prev_sel[prev_sel_count].m = m;
 		prev_sel[prev_sel_count].tag = t;
+		prev_sel[prev_sel_count].index = index;
+		prev_sel[prev_sel_count].backdrop = backdrop;
 		prev_sel_count++;
 	}
 }
@@ -152,6 +163,25 @@ single_selected_on(Monitor *m)
 		found = t;
 	}
 	return found;
+}
+
+/* A tag is only usable by the slide while it is still present in
+ * globalconf.tags (which holds a strong reference, so membership means the
+ * memory is live) and activated. Focus-space temp tags are deleted
+ * (activated=false, removed from the array) the moment their window leaves,
+ * which can happen before the deferred banning_refresh() that would start the
+ * slide runs. A dead tag's tag_t may already be freed, so it must never be
+ * dereferenced: the membership scan is a pointer comparison, and only a tag
+ * found in the array gets its ->activated field read. */
+static bool
+tag_is_alive(tag_t *t)
+{
+	if (!t)
+		return false;
+	for (int i = 0; i < globalconf.tags.len; i++)
+		if (globalconf.tags.tab[i] == t)
+			return t->activated;
+	return false;
 }
 
 /* ========================================================================
@@ -188,6 +218,9 @@ struct slide_state {
 	bool wallpaper_visible;
 	bool root_bg_visible;
 	struct wl_event_source *timer; /* 1 ms fallback driver */
+	int frames;  /* tick frames of the current (or last) slide */
+	double last_apply;  /* monotonic time of the last applied frame */
+	double last_frame_apply;  /* monotonic time of the last FRAME-driven apply */
 };
 
 static struct slide_state slide;
@@ -206,24 +239,29 @@ clock_now(void)
 
 /* A wlr_scene_buffer showing only `box` (layout/buffer coordinates) of the
  * shared wallpaper buffer, so each desktop carries its own copy of the
- * wallpaper for its screen. NULL when there is no wallpaper. */
+ * wallpaper for its screen. NULL when there is no wallpaper.
+ *
+ * The wallpaper buffer is passed straight to wlr_scene_buffer_create(): the
+ * scene buffer takes its own reference (wlr_buffer_lock) for as long as the
+ * node exists, so it stays alive even if the wallpaper node is replaced, and
+ * it must NOT be locked/dropped here (wlr_buffer_drop is a one-shot flag the
+ * wallpaper path has already set). */
 static struct wlr_scene_buffer *
 wallpaper_crop_create(struct wlr_box *box)
 {
+	struct wlr_scene_buffer *node;
+	struct wlr_fbox src;
+
 	if (!globalconf.wallpaper_buffer_node
 			|| !globalconf.wallpaper_buffer_node->buffer)
 		return NULL;
 
-	struct wlr_buffer *buf = globalconf.wallpaper_buffer_node->buffer;
-	/* wlr_scene_buffer_create() locks the buffer; hold our own ref around the
-	 * call so the node always owns one, then drop ours. */
-	wlr_buffer_lock(buf);
-	struct wlr_scene_buffer *node = wlr_scene_buffer_create(layers[LyrBg], buf);
-	wlr_buffer_drop(buf);
+	node = wlr_scene_buffer_create(layers[LyrBg],
+		globalconf.wallpaper_buffer_node->buffer);
 	if (!node)
 		return NULL;
 
-	struct wlr_fbox src = {
+	src = (struct wlr_fbox) {
 		.x = box->x, .y = box->y,
 		.width = box->width, .height = box->height,
 	};
@@ -245,12 +283,17 @@ black_rect_create(struct wlr_box *box)
 	return rect;
 }
 
-/* Build the backdrop node for one desktop (called from slide_start). */
+/* Build the backdrop node for one desktop (called from slide_start). `kind`
+ * is the tag backdrop kind; the outgoing desktop may come from a snapshot
+ * when its tag was deleted, so it is passed explicitly rather than read off a
+ * (possibly dangling) tag pointer. Always clears both node slots so a stale
+ * pointer from a previous slide can never be destroyed twice. */
 static void
-desktop_backdrop_setup(struct slide_desktop *d, tag_t *tag, struct wlr_box *box)
+desktop_backdrop_setup(struct slide_desktop *d, int kind, struct wlr_box *box)
 {
-	d->tag = tag;
-	d->black = (tag && tag->backdrop == TAG_BACKDROP_BLACK);
+	d->wallpaper = NULL;
+	d->black_bg = NULL;
+	d->black = (kind == TAG_BACKDROP_BLACK);
 	if (d->black) {
 		d->black_bg = black_rect_create(box);
 	} else {
@@ -288,6 +331,8 @@ slide_apply(double eased)
 	int off_out = -slide.direction * (int)llround(eased * slide.distance);
 	int off_in = slide.direction * (int)llround((1.0 - eased) * slide.distance);
 
+	slide.frames++;
+
 	slide_apply_desktop(&slide.out, off_out);
 	slide_apply_desktop(&slide.in, off_in);
 
@@ -309,19 +354,25 @@ slide_apply(double eased)
  * ======================================================================== */
 
 /* Emit the tag::slide_start / tag::slide_end Lua signal on the new tag, with
- * (old_tag, new_tag, direction) as arguments. */
+ * (old_tag, new_tag, direction) as arguments. old_tag may be nil when the
+ * outgoing tag was deleted (focus-space leave). luaA_object_emit_signal()
+ * pops only the arguments and leaves the object on the stack, so pop exactly
+ * it. */
 static void
 emit_slide_signal(const char *name, tag_t *old, tag_t *new, int direction)
 {
 	lua_State *L = globalconf_get_lua_State();
-	if (!L || !old || !new)
+	if (!L || !new)
 		return;
 	luaA_object_push(L, new);
-	luaA_object_push(L, old);
+	if (old)
+		luaA_object_push(L, old);
+	else
+		lua_pushnil(L);
 	luaA_object_push(L, new);
 	lua_pushinteger(L, direction);
 	luaA_object_emit_signal(L, -4, name, 3);
-	lua_pop(L, 4);
+	lua_pop(L, 1);
 }
 
 static void
@@ -402,7 +453,9 @@ slide_finish(void)
 }
 
 /* Read the tag's Lua-side index (tag._private.awful_tag_properties.index),
- * which the C tag_t does not carry. Returns -1 when unavailable. */
+ * which the C tag_t does not carry. Returns -1 when unavailable. The pushed
+ * object can be nil if the tag's Lua object was collected, so never index it
+ * without checking the type first. */
 static int
 tag_lua_index(tag_t *t)
 {
@@ -411,6 +464,10 @@ tag_lua_index(tag_t *t)
 	if (!L || !t)
 		return -1;
 	luaA_object_push(L, t);
+	if (lua_type(L, -1) != LUA_TUSERDATA) {
+		lua_pop(L, 1);
+		return -1;
+	}
 	lua_getfield(L, -1, "_private");
 	if (lua_istable(L, -1)) {
 		lua_getfield(L, -1, "awful_tag_properties");
@@ -427,10 +484,11 @@ tag_lua_index(tag_t *t)
 }
 
 static void
-slide_start(Monitor *m, tag_t *old, tag_t *new)
+slide_start(Monitor *m, tag_t *old, int old_backdrop, int old_index, tag_t *new)
 {
 	Client *c;
 	int i;
+	int oi;
 
 	slide_finish();
 
@@ -448,27 +506,42 @@ slide_start(Monitor *m, tag_t *old, tag_t *new)
 	slide.easing = slide_easing;
 	slide.eased = 0.0;
 	slide.manual = false;
+	slide.frames = 0;
+	slide.last_apply = clock_now();
+	slide.last_frame_apply = clock_now();
 
 	client_array_init(&slide.out.clients);
 	client_array_init(&slide.in.clients);
+	slide.out.wallpaper = NULL;
+	slide.out.black_bg = NULL;
+	slide.in.wallpaper = NULL;
+	slide.in.black_bg = NULL;
+	slide.gap_rect = NULL;
 	slide.static_bg_count = 0;
 	memset(slide.static_bg, 0, sizeof(slide.static_bg));
 
-	/* Direction by tag index: a higher index enters from the right. */
+	/* Direction by tag index: a higher index enters from the right. The old
+	 * index comes from the snapshot (a deleted focus-space temp tag has no
+	 * live object to read it from). */
+	oi = old_index;
+	if (oi < 0 && old)
+		oi = tag_lua_index(old);
 	{
-		int oi = tag_lua_index(old);
 		int ni = tag_lua_index(new);
 		if (oi >= 0 && ni >= 0)
 			slide.direction = (ni > oi) ? +1 : -1;
 	}
 
 	/* Collect the sliding clients. Clients visible on BOTH tags (or sticky)
-	 * stay put: they are on the arriving desktop already. */
+	 * stay put: they are on the arriving desktop already. When `old` is NULL
+	 * the outgoing tag was deleted (focus-space leave): its desktop is empty
+	 * by construction (a tag with clients cannot be deleted), so there is
+	 * nothing to slide out of it. */
 	for (i = 0; i < globalconf.clients.len; i++) {
 		c = globalconf.clients.tab[i];
 		if (!c || !c->scene || c->mon != m)
 			continue;
-		bool on_old = is_client_tagged(c, old);
+		bool on_old = old && is_client_tagged(c, old);
 		bool on_new = is_client_tagged(c, new);
 		if (c->sticky || (on_old && on_new))
 			continue;
@@ -489,8 +562,8 @@ slide_start(Monitor *m, tag_t *old, tag_t *new)
 	}
 
 	/* Per-desktop backdrops for this screen. */
-	desktop_backdrop_setup(&slide.out, old, &m->m);
-	desktop_backdrop_setup(&slide.in, new, &m->m);
+	desktop_backdrop_setup(&slide.out, old_backdrop, &m->m);
+	desktop_backdrop_setup(&slide.in, new->backdrop, &m->m);
 
 	/* The gap strip between the two desktops. */
 	slide.gap_rect = wlr_scene_rect_create(layers[LyrBg],
@@ -555,6 +628,8 @@ slide_start(Monitor *m, tag_t *old, tag_t *new)
  * Driver entry points
  * ======================================================================== */
 
+static void slide_tick_impl(bool from_frame);
+
 void
 slide_set_progress(double p)
 {
@@ -570,6 +645,20 @@ slide_set_progress(double p)
 void
 slide_tick(void)
 {
+	slide_tick_impl(false);
+}
+
+/* Called from rendermon(): this is the vsync-aligned primary driver. */
+void
+slide_tick_frame(void)
+{
+	slide_tick_impl(true);
+}
+
+static void
+slide_tick_impl(bool from_frame)
+{
+	double now;
 	double p;
 
 	if (!slide.active)
@@ -582,14 +671,32 @@ slide_tick(void)
 		return;
 	}
 
-	p = (clock_now() - slide.t0) / slide.duration;
+	now = clock_now();
+	p = (now - slide.t0) / slide.duration;
 	if (p < 0.0)
 		p = 0.0;
 	else if (p > 1.0)
 		p = 1.0;
 
 	slide.eased = animation_ease(slide.easing, p);
-	slide_apply(slide.eased);
+
+	if (from_frame) {
+		/* Output frame event: the scene apply lands right before the commit,
+		 * so the presented frame carries the freshest position. */
+		slide.last_frame_apply = now;
+		if (now - slide.last_apply >= 1.0 / 120.0) {
+			slide.last_apply = now;
+			slide_apply(slide.eased);
+		}
+	} else if (now - slide.last_frame_apply >= 0.05) {
+		/* Fallback (1 ms timer / some_refresh): only re-apply when the output
+		 * has stalled for 50 ms with no frame event, so the vsync driver
+		 * wins whenever frames are flowing. */
+		if (now - slide.last_apply >= 1.0 / 120.0) {
+			slide.last_apply = now;
+			slide_apply(slide.eased);
+		}
+	}
 
 	if (p >= 1.0)
 		slide_finish();
@@ -686,12 +793,21 @@ slide_handle_banning(void)
 		return false;
 
 	wl_list_for_each(m, &mons, link) {
+		struct prev_sel *p;
 		cur = single_selected_on(m);
-		prev = prev_selected_get(m);
+		p = prev_selected_get(m);
+		prev = p ? p->tag : NULL;
 		if (cur && prev && cur != prev && slide_enabled
+				&& tag_is_alive(cur)
 				&& m->wlr_output && m->wlr_output->enabled) {
+			bool old_alive = tag_is_alive(prev);
+			int old_backdrop = old_alive ? prev->backdrop : p->backdrop;
+			int old_index = p->index;
 			prev_selected_set(m, cur);
-			slide_start(m, prev, cur);
+			/* A deleted outgoing tag (focus-space leave) slides out as an
+			 * empty desktop built from the snapshot. */
+			slide_start(m, old_alive ? prev : NULL, old_backdrop,
+				old_index, cur);
 			took = true;
 			break;
 		}
@@ -715,8 +831,13 @@ slide_timer_cb(void *data)
 {
 	(void)data;
 	slide_tick();
-	if (slide.active)
+	if (slide.active) {
+		/* Nudge the output so rendermon() fires and takes over the driving;
+		 * the tick above only applies if the output has been stalled. */
+		if (slide.mon && slide.mon->wlr_output)
+			wlr_output_schedule_frame(slide.mon->wlr_output);
 		wl_event_source_timer_update(slide.timer, 1);
+	}
 	return 0;
 }
 
@@ -861,6 +982,13 @@ luaA_slide_get_active(lua_State *L)
 	return 1;
 }
 
+static int
+luaA_slide_get_frames(lua_State *L)
+{
+	lua_pushinteger(L, slide.frames);
+	return 1;
+}
+
 static const struct luaL_Reg slide_methods[] = {
 	{ "set_enabled", luaA_slide_set_enabled },
 	{ "enabled", luaA_slide_get_enabled },
@@ -874,6 +1002,7 @@ static const struct luaL_Reg slide_methods[] = {
 	{ "gap_color", luaA_slide_get_gap_color },
 	{ "set_progress", luaA_slide_set_progress },
 	{ "active", luaA_slide_get_active },
+	{ "frames", luaA_slide_get_frames },
 	{ NULL, NULL }
 };
 

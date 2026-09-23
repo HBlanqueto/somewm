@@ -39,6 +39,9 @@ void slide_hot_reload(lua_State *L);
 /* Advance any active slide. Called from some_refresh() (fallback) and from
  * rendermon() on the sliding output (primary, vsync-aligned). */
 void slide_tick(void);
+/* Frame-event driver: called from rendermon() right before the scene commit.
+ * Applies the frame's position so the presented frame carries it. */
+void slide_tick_frame(void);
 
 /* Called from banning_refresh(): keeps the persistent focus-space black rect
  * in sync, defers the real banning while a slide is running, and starts a

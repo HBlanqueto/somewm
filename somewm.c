@@ -6101,7 +6101,7 @@ rendermon(struct wl_listener *listener, void *data)
 	 * nodes below. The moved nodes damage the scene, which schedules the
 	 * next frame, so the animation self-perpetuates at the output's rate. */
 	if (slide_active_on(m))
-		slide_tick();
+		slide_tick_frame();
 
 	/* needs_frame is true only when there is something to present;
 	 * wlr_scene_output_commit() returns true without presenting otherwise, so
