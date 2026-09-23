@@ -299,6 +299,11 @@ struct client_t
       * scene tree is shifted down without touching c->geometry, so the client
       * is never reconfigured. Always >= 0. */
     int visual_offset_y;
+    /** Visual-only horizontal offset (px) for the tag slide: the whole scene
+      * tree is shifted sideways without touching c->geometry, so the client
+      * is never reconfigured. Can be positive or negative; the slide driver
+      * owns it and restores it to 0 when the animation ends. */
+    int visual_offset_x;
     /** Clip reduction (px) applied to the bottom of the client surface while
       * the visual offset is active: the strip that slid past the workarea is
       * not drawn. Set once per reveal/hide transition to the target height, so
@@ -399,22 +404,26 @@ struct client_t
 };
 
 /** Position the client's whole scene tree at its geometry plus the visual
- * focus-mode offset. Surface, subsurfaces, xdg popups, borders, shadow, crop
- * ring and innerline all hang off c->scene, so one root move carries them all.
- * c->geometry is never touched: no configure is sent, only rendering moves.
+ * offsets (focus-mode reveal in Y, tag slide in X). Surface, subsurfaces,
+ * xdg popups, borders, shadow, crop ring and innerline all hang off c->scene,
+ * so one root move carries them all. c->geometry is never touched: no
+ * configure is sent, only rendering moves.
  *
  * While the client is visually below its geometry its shadow would bleed onto
  * a stacked monitor below and its bottom strip would steal input (the surface
- * clip is render-only). The shadow node is disabled here while the offset is
- * active and restored to the CURRENT requested visibility (shadow.user_visible)
- * when it clears, so toggling the shadow while revealed is not overwritten. */
+ * clip is render-only). The shadow node is disabled here while the vertical
+ * offset is active and restored to the CURRENT requested visibility
+ * (shadow.user_visible) when it clears, so toggling the shadow while revealed
+ * is not overwritten. The horizontal slide offset never suppresses the shadow:
+ * the tree slides as a unit, so nothing bleeds. */
 static inline void
 client_apply_scene_offset(Client *c)
 {
     if (!c || !c->scene)
         return;
     wlr_scene_node_set_position(&c->scene->node,
-        c->geometry.x, c->geometry.y + c->visual_offset_y);
+        c->geometry.x + c->visual_offset_x,
+        c->geometry.y + c->visual_offset_y);
 
     if (c->shadow.tree) {
         if (c->visual_offset_y > 0) {
