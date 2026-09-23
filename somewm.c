@@ -5550,31 +5550,47 @@ motionabsolute(struct wl_listener *listener, void *data)
 }
 
 /* Helper function to emit mouse::leave on the object that previously had the mouse.
- * Also clears drawable_under_mouse tracking to emit leave on the drawable. */
+ * Also clears drawable_under_mouse tracking to emit leave on the drawable.
+ * The pushed Lua object can be nil when the underlying object was freed by a
+ * hot-reload (or GC) while still recorded in mouse_under: emitting on nil is a
+ * non-object access and corrupts memory, so bail out instead. */
 static void
 mouse_emit_leave(lua_State *L)
 {
 	if (globalconf.mouse_under.type == UNDER_CLIENT) {
 		client_t *c = globalconf.mouse_under.ptr.client;
 		luaA_object_push(L, c);
-		luaA_object_emit_signal(L, -1, "mouse::leave", 0);
-		lua_pop(L, 1);
+		if (lua_isnil(L, -1)) {
+			warn("mouse::leave on unregistered client %p", (void*)c);
+			lua_pop(L, 1);
+		} else {
+			luaA_object_emit_signal(L, -1, "mouse::leave", 0);
+			lua_pop(L, 1);
+		}
 	} else if (globalconf.mouse_under.type == UNDER_DRAWIN) {
 		drawin_t *d = globalconf.mouse_under.ptr.drawin;
 		luaA_object_push(L, d);
 		if (lua_isnil(L, -1)) {
 			warn("mouse::leave on unregistered drawin %p", (void*)d);
+			lua_pop(L, 1);
+		} else {
+			luaA_object_emit_signal(L, -1, "mouse::leave", 0);
+			lua_pop(L, 1);
 		}
-		luaA_object_emit_signal(L, -1, "mouse::leave", 0);
-		lua_pop(L, 1);
 	}
 	globalconf.mouse_under.type = UNDER_NONE;
 
 	/* Also clear drawable tracking - emit leave on drawable if any */
 	if (globalconf.drawable_under_mouse != NULL) {
 		luaA_object_push(L, globalconf.drawable_under_mouse);
-		luaA_object_emit_signal(L, -1, "mouse::leave", 0);
-		lua_pop(L, 1);
+		if (lua_isnil(L, -1)) {
+			warn("mouse::leave on unregistered drawable %p",
+				(void*)globalconf.drawable_under_mouse);
+			lua_pop(L, 1);
+		} else {
+			luaA_object_emit_signal(L, -1, "mouse::leave", 0);
+			lua_pop(L, 1);
+		}
 		luaA_object_unref(L, globalconf.drawable_under_mouse);
 		globalconf.drawable_under_mouse = NULL;
 	}
@@ -5585,6 +5601,11 @@ static void
 mouse_emit_client_enter(lua_State *L, client_t *c)
 {
 	luaA_object_push(L, c);
+	if (lua_isnil(L, -1)) {
+		warn("mouse::enter on unregistered client %p", (void*)c);
+		lua_pop(L, 1);
+		return;
+	}
 	luaA_object_emit_signal(L, -1, "mouse::enter", 0);
 	lua_pop(L, 1);
 	globalconf.mouse_under.type = UNDER_CLIENT;
@@ -5598,6 +5619,8 @@ mouse_emit_drawin_enter(lua_State *L, drawin_t *d)
 	luaA_object_push(L, d);
 	if (lua_isnil(L, -1)) {
 		warn("mouse::enter on unregistered drawin %p", (void*)d);
+		lua_pop(L, 1);
+		return;
 	}
 	luaA_object_emit_signal(L, -1, "mouse::enter", 0);
 	lua_pop(L, 1);

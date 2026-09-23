@@ -52,6 +52,7 @@
 
 #include "somewm_api.h"
 #include "somewm_types.h"
+#include "globalconf.h"
 #include "common/lualib.h"
 #include "common/util.h"
 #include "luaa.h"
@@ -294,6 +295,11 @@ luaA_mouse_set_newindex_miss_handler(lua_State *L)
  * Same reasoning as luaA_root_hot_reload: unref against the state that owns
  * them, or luaA_registerfct unrefs an old-state ref against the new registry
  * when awful.mouse re-registers.
+ *
+ * Also drop the mouse_under tracking: it can hold a drawin (or client) whose
+ * Lua object is freed with the state being torn down. A later
+ * mouse_emit_leave() on the stale pointer would emit on a non-object and
+ * corrupt memory.
  */
 void
 luaA_mouse_hot_reload(lua_State *L)
@@ -302,6 +308,11 @@ luaA_mouse_hot_reload(lua_State *L)
     luaL_unref(L, LUA_REGISTRYINDEX, miss_newindex_handler);
     miss_index_handler = LUA_REFNIL;
     miss_newindex_handler = LUA_REFNIL;
+
+    globalconf.mouse_under.type = UNDER_NONE;
+    globalconf.mouse_under.ptr.client = NULL;
+    globalconf.mouse_under.ptr.drawin = NULL;
+    globalconf.mouse_under.ignore_next_enter_leave = false;
 }
 
 const struct luaL_Reg awesome_mouse_methods[] =
