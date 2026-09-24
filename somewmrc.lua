@@ -325,8 +325,8 @@ screen.connect_signal("request::desktop_decoration", function(s)
                                                 client.focus:move_to_tag(t)
                                             end
                                         end),
-            awful.button({ }, 4, function(t) awful.tag.viewprev(t.screen) end),
-            awful.button({ }, 5, function(t) awful.tag.viewnext(t.screen) end),
+            awful.button({ }, 4, function(t) require("somewm.workspaces").prev(t.screen) end),
+            awful.button({ }, 5, function(t) require("somewm.workspaces").next(t.screen) end),
         }
     }
 
@@ -402,8 +402,8 @@ end)
 -- Mouse bindings
 awful.mouse.append_global_mousebindings({
     awful.button({ }, 3, function () mymainmenu:toggle() end),
-    awful.button({ }, 4, awful.tag.viewprev),
-    awful.button({ }, 5, awful.tag.viewnext),
+    awful.button({ }, 4, function() require("somewm.workspaces").prev() end),
+    awful.button({ }, 5, function() require("somewm.workspaces").next() end),
 })
 
 -- Key bindings
@@ -506,14 +506,14 @@ awful.keyboard.append_global_keybindings({
     awful.key {
         modifiers   = { modkey },
         key         = "Left",
-        on_press    = awful.tag.viewprev,
+        on_press    = function() require("somewm.workspaces").prev() end,
         description = "view previous",
         group       = "tag",
     },
     awful.key {
         modifiers   = { modkey },
         key         = "Right",
-        on_press    = awful.tag.viewnext,
+        on_press    = function() require("somewm.workspaces").next() end,
         description = "view next",
         group       = "tag",
     },

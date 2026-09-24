@@ -825,12 +825,44 @@ function M.view_desktop(n, s)
     return true
 end
 
+-- Ordered list of visible tags for a screen: s.tags order (desktops, focus
+-- spaces and foreign tags interleaved as the module placed them). Mirrors
+-- awful.tag.viewidx's hide filter so foreign hidden tags are skipped too.
+local function visible_tags(s)
+    local tags = {}
+    for _, t in ipairs(s.tags) do
+        if not awful.tag.getproperty(t, "hide") then
+            tags[#tags + 1] = t
+        end
+    end
+    return tags
+end
+
+-- Step one workspace in `dir` (1 = next, -1 = prev). Hard edges: past the
+-- first/last workspace it is a no-op (false, no selection change, no slide).
+local function step(dir, s)
+    s = s or awful.screen.focused()
+    if not s then return false, "no screen" end
+    local tags = visible_tags(s)
+    local sel = s.selected_tag
+    if not tag_alive(sel) then return false, "no selected workspace" end
+    local idx
+    for i, t in ipairs(tags) do
+        if t == sel then idx = i break end
+    end
+    if not idx then return false, "selected workspace not in list" end
+    local target = tags[idx + dir]
+    if not tag_alive(target) then return false end
+    target:view_only()
+    return true
+end
+
 function M.next(s)
-    return awful.tag.viewnext(s)
+    return step(1, s)
 end
 
 function M.prev(s)
-    return awful.tag.viewprev(s)
+    return step(-1, s)
 end
 
 function M.move_focused(n, s)
