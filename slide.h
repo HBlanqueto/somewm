@@ -36,6 +36,11 @@ void slide_init(void);
 void slide_setup(lua_State *L);
 void slide_hot_reload(lua_State *L);
 
+/* The wallpaper changed (root.wallpaper / cache show / reload wipe): drop the
+ * slide-owned backdrop buffers so the next slide rebuilds them from the fresh
+ * wallpaper surface. */
+void slide_wallpaper_changed(void);
+
 /* Advance any active slide. Called from some_refresh() (fallback) and from
  * rendermon() on the sliding output (primary, vsync-aligned). */
 void slide_tick(void);

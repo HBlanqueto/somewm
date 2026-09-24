@@ -6884,6 +6884,11 @@ globalconf_wipe(void)
 		globalconf.wallpaper_buffer_node = NULL;
 	}
 
+	/* Drop the slide-owned wallpaper snapshots: they were built from the
+	 * surfaces being freed above (and from per-screen cache surfaces), so
+	 * they must be rebuilt from the next wallpaper that is applied. */
+	slide_wallpaper_changed();
+
 	/* Zero out the structure */
 	memset(&globalconf, 0, sizeof(globalconf));
 }

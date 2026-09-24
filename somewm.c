@@ -733,6 +733,14 @@ some_slide_set_root_bg_visible(bool visible)
 		wlr_scene_node_set_enabled(&root_bg->node, visible);
 }
 
+/* Tag slide: current enabled state of the root background rect, so the slide
+ * can restore exactly what it found instead of assuming it was shown. */
+bool
+some_slide_root_bg_visible(void)
+{
+	return root_bg && root_bg->node.enabled;
+}
+
 void
 arrangelayer(Monitor *m, struct wl_list *list, struct wlr_box *usable_area, int exclusive)
 {

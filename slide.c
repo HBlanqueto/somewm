@@ -24,12 +24,14 @@
 #include "globalconf.h"
 #include "luaa.h"
 #include "objects/client.h"
+#include "objects/drawable.h"
 #include "objects/screen.h"
 #include "somewm_api.h"
 #include "somewm_types.h"
 #include "scenefx_compat.h"
 #include "window.h"
 
+#include <cairo.h>
 #include <math.h>
 #include <string.h>
 #include <time.h>
@@ -49,8 +51,9 @@ extern void focusclient(Client *c, int lift);
 extern Client *focustop(Monitor *m);
 extern void motionnotify(uint32_t time, struct wlr_input_device *device,
 	double sx, double sy, double sx_unaccel, double sy_unaccel);
-/* somewm.c helper that toggles the root background rect (static there) */
+/* somewm.c helpers that toggle the root background rect (static there) */
 extern void some_slide_set_root_bg_visible(bool visible);
+extern bool some_slide_root_bg_visible(void);
 
 /* ========================================================================
  * Configuration (defaults, Lua-settable via the `slide` global)
@@ -247,6 +250,39 @@ struct slide_layer {
 	struct wl_listener surface_destroy; /* clears ->l if the surface dies */
 };
 
+/* One wallpaper scene node the slide hid at start, with the exact enabled
+ * state it had then. A destroy listener clears ->node if the node is replaced
+ * or destroyed mid-slide (wallpaper change), so teardown never touches a freed
+ * node and never re-enables a node the wallpaper system superseded. */
+#define SLIDE_MAX_WP_NODES (1 + WALLPAPER_MAX_SCREENS) /* legacy + per-screen */
+struct slide_wp_node_hidden {
+	struct wlr_scene_buffer *node;   /* cleared by the destroy listener */
+	bool enabled;                    /* enabled state at slide start */
+	bool is_legacy;                  /* legacy node vs per-screen cache node */
+	int screen_index;                /* cache nodes: 0-based screen index */
+	struct wl_listener destroy;
+};
+
+#define SLIDE_MAX_WP_SOURCES WALLPAPER_MAX_SCREENS
+
+/* Slide-owned snapshot of the current wallpaper for one monitor: an SHM
+ * wlr_buffer we created ourselves (so releasing it is wlr_buffer_drop(), which
+ * is ours to call), built from whatever cairo surface is actually visible on
+ * that screen (the per-screen cache surface for filepath wallpapers, else
+ * globalconf.wallpaper for the legacy path). Rebuilt only when the wallpaper
+ * changes: the fingerprint is the source surface plus the monitor box, and
+ * slide_wallpaper_changed() drops every buffer on root.wallpaper / cache show
+ * / reload wipe. Every slide backdrop crop locks this buffer, so a slide
+ * always carries the real wallpaper regardless of the scene node's lifecycle. */
+struct slide_wp_source {
+	Monitor *m;
+	cairo_surface_t *surface;       /* fingerprint: cairo surface built from */
+	wallpaper_cache_entry_t *entry; /* fingerprint: cache entry built from */
+	int origin_x, origin_y;         /* buffer origin in layout coordinates */
+	int w, h;                       /* buffer size */
+	struct wlr_buffer *buffer;      /* owned reference */
+};
+
 struct slide_state {
 	bool active;
 	Monitor *mon;
@@ -264,8 +300,10 @@ struct slide_state {
 	struct wlr_scene_rect *gap_rect;
 	struct wlr_scene_buffer *static_bg[SLIDE_MAX_STATIC];
 	int static_bg_count;
-	bool wallpaper_visible;
+	struct slide_wp_node_hidden hidden[SLIDE_MAX_WP_NODES];
+	int hidden_count;
 	bool root_bg_visible;
+	bool black_warned;     /* one clear warning per slide on a black degrade */
 	struct slide_layer layers[SLIDE_MAX_LAYERS];
 	int layers_count;
 	struct wl_event_source *timer; /* 1 ms fallback driver */
@@ -275,6 +313,8 @@ struct slide_state {
 };
 
 static struct slide_state slide;
+
+static struct slide_wp_source slide_wp_sources[SLIDE_MAX_WP_SOURCES];
 
 static double
 clock_now(void)
@@ -288,38 +328,183 @@ clock_now(void)
  * Backdrops
  * ======================================================================== */
 
-/* A wlr_scene_buffer showing only `box` (layout/buffer coordinates) of the
- * shared wallpaper buffer, so each desktop carries its own copy of the
- * wallpaper for its screen. NULL when there is no wallpaper.
- *
- * The wallpaper buffer is passed straight to wlr_scene_buffer_create(): the
- * scene buffer takes its own reference (wlr_buffer_lock) for as long as the
- * node exists, so it stays alive even if the wallpaper node is replaced, and
- * it must NOT be locked/dropped here (wlr_buffer_drop is a one-shot flag the
- * wallpaper path has already set). */
+/* Copy the (sx,sy,w,h) region of a cairo surface into a new SHM wlr_buffer.
+ * Ownership of the returned buffer passes to the caller. */
+static struct wlr_buffer *
+slide_wp_buffer_region(cairo_surface_t *src, int sx, int sy, int w, int h)
+{
+	struct wlr_buffer *buf = NULL;
+	cairo_surface_t *tmp = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, w, h);
+
+	if (cairo_surface_status(tmp) != CAIRO_STATUS_SUCCESS) {
+		cairo_surface_destroy(tmp);
+		return NULL;
+	}
+	cairo_t *cr = cairo_create(tmp);
+	if (cr) {
+		cairo_set_source_surface(cr, src, -sx, -sy);
+		cairo_set_operator(cr, CAIRO_OPERATOR_SOURCE);
+		cairo_paint(cr);
+		cairo_destroy(cr);
+	}
+	cairo_surface_flush(tmp);
+	buf = drawable_create_buffer_from_data(w, h,
+		cairo_image_surface_get_data(tmp), cairo_image_surface_get_stride(tmp));
+	cairo_surface_destroy(tmp);
+	return buf;
+}
+
+/* 0-based index of monitor m into globalconf.screens /
+ * globalconf.current_wallpaper_per_screen, or -1 when unknown. */
+static int
+slide_monitor_screen_index(Monitor *m)
+{
+	for (int i = 0; i < globalconf.screens.len; i++) {
+		screen_t *s = globalconf.screens.tab[i];
+		if (s && s->monitor == m)
+			return s->index - 1;
+	}
+	return -1;
+}
+
+/* Return (and build on first use or wallpaper change) the slide-owned
+ * wallpaper buffer covering monitor m, or NULL when no wallpaper surface is
+ * available. Never rebuilt per slide: only when the source surface or the
+ * monitor box changed, or after slide_wallpaper_changed(). */
+static struct slide_wp_source *
+slide_wp_ensure(Monitor *m)
+{
+	struct slide_wp_source *src = NULL;
+	cairo_surface_t *src_surface;
+	wallpaper_cache_entry_t *entry = NULL;
+	int idx = slide_monitor_screen_index(m);
+	int ex = 0, ey = 0;   /* entry surface origin in layout coordinates */
+
+	if (idx >= 0 && idx < WALLPAPER_MAX_SCREENS)
+		entry = globalconf.current_wallpaper_per_screen[idx];
+	if (entry && entry->surface) {
+		src_surface = entry->surface;
+		if (idx >= 0 && idx < globalconf.screens.len) {
+			screen_t *s = globalconf.screens.tab[idx];
+			if (s) {
+				ex = s->geometry.x;
+				ey = s->geometry.y;
+			}
+		}
+	} else {
+		entry = NULL;
+		if (!globalconf.wallpaper)
+			return NULL;
+		src_surface = globalconf.wallpaper;
+	}
+	if (m->m.width <= 0 || m->m.height <= 0)
+		return NULL;
+
+	for (int i = 0; i < SLIDE_MAX_WP_SOURCES; i++)
+		if (slide_wp_sources[i].m == m) {
+			src = &slide_wp_sources[i];
+			break;
+		}
+	if (!src)
+		for (int i = 0; i < SLIDE_MAX_WP_SOURCES; i++)
+			if (!slide_wp_sources[i].m) {
+				src = &slide_wp_sources[i];
+				break;
+			}
+	if (!src)
+		return NULL;
+
+	/* Already built for this monitor with the current wallpaper? */
+	if (src->buffer && src->surface == src_surface && src->entry == entry
+			&& src->origin_x == m->m.x && src->origin_y == m->m.y
+			&& src->w == m->m.width && src->h == m->m.height)
+		return src;
+
+	/* Wallpaper or geometry changed: rebuild (drop our owned reference). */
+	if (src->buffer) {
+		wlr_buffer_drop(src->buffer);
+		src->buffer = NULL;
+	}
+	struct wlr_buffer *buf = slide_wp_buffer_region(src_surface,
+		m->m.x - ex, m->m.y - ey, m->m.width, m->m.height);
+	if (!buf)
+		return NULL;
+	src->buffer = buf;
+	src->surface = src_surface;
+	src->entry = entry;
+	src->origin_x = m->m.x;
+	src->origin_y = m->m.y;
+	src->w = m->m.width;
+	src->h = m->m.height;
+	return src;
+}
+
+/* Drop every slide-owned wallpaper buffer: the wallpaper changed (root.wallpaper
+ * / cache show / reload wipe) or the compositor is going away. Any crop scene
+ * node keeps its own buffer lock and survives until destroyed. */
+void
+slide_wallpaper_changed(void)
+{
+	for (int i = 0; i < SLIDE_MAX_WP_SOURCES; i++) {
+		struct slide_wp_source *src = &slide_wp_sources[i];
+		if (src->buffer) {
+			wlr_buffer_drop(src->buffer);
+			src->buffer = NULL;
+		}
+		memset(src, 0, sizeof(*src));
+	}
+}
+
+/* A wlr_scene_buffer showing `box` (layout coordinates) of the slide-owned
+ * wallpaper buffer covering `src`'s monitor. The scene buffer locks the buffer
+ * for its lifetime, so the crop stays alive even if the slide-owned buffer is
+ * later rebuilt; it must NOT be locked or dropped here (the wallpaper paths
+ * own those). */
 static struct wlr_scene_buffer *
-wallpaper_crop_create(struct wlr_box *box)
+wallpaper_crop_from_source(struct slide_wp_source *src, struct wlr_box *box)
 {
 	struct wlr_scene_buffer *node;
-	struct wlr_fbox src;
+	struct wlr_fbox sb;
 
-	if (!globalconf.wallpaper_buffer_node
-			|| !globalconf.wallpaper_buffer_node->buffer)
+	if (!src || !src->buffer)
 		return NULL;
-
-	node = wlr_scene_buffer_create(layers[LyrBg],
-		globalconf.wallpaper_buffer_node->buffer);
+	node = wlr_scene_buffer_create(layers[LyrBg], src->buffer);
 	if (!node)
 		return NULL;
-
-	src = (struct wlr_fbox) {
-		.x = box->x, .y = box->y,
-		.width = box->width, .height = box->height,
+	sb = (struct wlr_fbox) {
+		.x = box->x - src->origin_x,
+		.y = box->y - src->origin_y,
+		.width = box->width,
+		.height = box->height,
 	};
-	wlr_scene_buffer_set_source_box(node, &src);
+	wlr_scene_buffer_set_source_box(node, &sb);
 	wlr_scene_buffer_set_dest_size(node, box->width, box->height);
 	wlr_scene_node_set_position(&node->node, box->x, box->y);
 	return node;
+}
+
+/* Fallback crop directly from the shared wallpaper node's buffer (layout
+ * coordinates), used only when no slide-owned source is available. Same
+ * locking rules as above. */
+static struct wlr_scene_buffer *
+wallpaper_crop_from_node(struct wlr_scene_buffer *node, struct wlr_box *box)
+{
+	struct wlr_scene_buffer *crop;
+	struct wlr_fbox sb;
+
+	if (!node || !node->buffer)
+		return NULL;
+	crop = wlr_scene_buffer_create(layers[LyrBg], node->buffer);
+	if (!crop)
+		return NULL;
+	sb = (struct wlr_fbox) {
+		.x = box->x, .y = box->y,
+		.width = box->width, .height = box->height,
+	};
+	wlr_scene_buffer_set_source_box(crop, &sb);
+	wlr_scene_buffer_set_dest_size(crop, box->width, box->height);
+	wlr_scene_node_set_position(&crop->node, box->x, box->y);
+	return crop;
 }
 
 static struct wlr_scene_rect *
@@ -334,23 +519,74 @@ black_rect_create(struct wlr_box *box)
 	return rect;
 }
 
+/* The wallpaper scene node the slide hid was destroyed or replaced mid-slide
+ * (a wallpaper change): clear our pointer so teardown does not touch it. The
+ * signal list is going away, so remove ourselves here; teardown checks
+ * wl_list_empty() before removing again. */
+static void
+slide_wp_node_destroy(struct wl_listener *listener, void *data)
+{
+	struct slide_wp_node_hidden *h = wl_container_of(listener, h, destroy);
+	(void)data;
+	wl_list_remove(&h->destroy.link);
+	wl_list_init(&h->destroy.link);
+	h->node = NULL;
+}
+
+/* Record node's exact enabled state, hide it, and track it for exact restore
+ * at teardown (a no-op if the node dies mid-slide). */
+static void
+slide_hide_wp_node(struct wlr_scene_buffer *node, bool is_legacy, int screen_index)
+{
+	struct slide_wp_node_hidden *h;
+
+	if (!node || slide.hidden_count >= SLIDE_MAX_WP_NODES)
+		return;
+	h = &slide.hidden[slide.hidden_count++];
+	h->node = node;
+	h->is_legacy = is_legacy;
+	h->screen_index = screen_index;
+	h->enabled = node->node.enabled;
+	h->destroy.notify = slide_wp_node_destroy;
+	wl_signal_add(&node->node.events.destroy, &h->destroy);
+	wlr_scene_node_set_enabled(&node->node, false);
+}
+
 /* Build the backdrop node for one desktop (called from slide_start). `kind`
  * is the tag backdrop kind; the outgoing desktop may come from a snapshot
  * when its tag was deleted, so it is passed explicitly rather than read off a
  * (possibly dangling) tag pointer. Always clears both node slots so a stale
- * pointer from a previous slide can never be destroyed twice. */
+ * pointer from a previous slide can never be destroyed twice.
+ *
+ * Fallback order: the slide-owned wallpaper snapshot → the currently visible
+ * wallpaper scene node's buffer → solid black. A black degrade logs ONE clear
+ * warning per slide, so it can never happen silently again. */
 static void
-desktop_backdrop_setup(struct slide_desktop *d, int kind, struct wlr_box *box)
+desktop_backdrop_setup(struct slide_desktop *d, int kind, Monitor *m, struct wlr_box *box)
 {
+	struct slide_wp_source *src;
+
 	d->wallpaper = NULL;
 	d->black_bg = NULL;
 	d->black = (kind == TAG_BACKDROP_BLACK);
 	if (d->black) {
 		d->black_bg = black_rect_create(box);
-	} else {
-		d->wallpaper = wallpaper_crop_create(box);
-		if (!d->wallpaper)
-			d->black_bg = black_rect_create(box); /* fallback: no wallpaper */
+		return;
+	}
+
+	src = slide_wp_ensure(m);
+	if (src)
+		d->wallpaper = wallpaper_crop_from_source(src, box);
+	if (!d->wallpaper && globalconf.wallpaper_buffer_node)
+		d->wallpaper = wallpaper_crop_from_node(globalconf.wallpaper_buffer_node, box);
+	if (!d->wallpaper) {
+		d->black_bg = black_rect_create(box);
+		if (!slide.black_warned) {
+			fprintf(stderr, "somewm: slide: WARNING: no wallpaper backdrop "
+				"available for a desktop (slide-owned snapshot and scene "
+				"node missing); falling back to solid black\n");
+			slide.black_warned = true;
+		}
 	}
 }
 
@@ -682,10 +918,27 @@ slide_teardown(bool emit_signal)
 	 * destroyed mid-slide (its destroy listener already removed itself). */
 	slide_layers_teardown();
 
-	/* Restore the global scene visibility we took over for the slide. */
-	if (globalconf.wallpaper_buffer_node)
-		wlr_scene_node_set_enabled(&globalconf.wallpaper_buffer_node->node,
-			slide.wallpaper_visible);
+	/* Restore the global scene visibility we took over for the slide:
+	 * every wallpaper node back to the exact enabled state it had at slide
+	 * start, and the root background. A node destroyed or replaced mid-slide
+	 * (wallpaper change) cleared its destroy listener, so it is skipped; a
+	 * per-screen cache node that is no longer the current one for its screen
+	 * is left hidden rather than resurrected over the new wallpaper. */
+	for (int hidx = 0; hidx < slide.hidden_count; hidx++) {
+		struct slide_wp_node_hidden *h = &slide.hidden[hidx];
+		if (!wl_list_empty(&h->destroy.link))
+			wl_list_remove(&h->destroy.link);
+		if (!h->node)
+			continue;
+		if (h->is_legacy) {
+			wlr_scene_node_set_enabled(&h->node->node, h->enabled);
+		} else if (h->screen_index >= 0 && h->screen_index < WALLPAPER_MAX_SCREENS) {
+			wallpaper_cache_entry_t *e = globalconf.current_wallpaper_per_screen[h->screen_index];
+			if (e && e->scene_node == h->node)
+				wlr_scene_node_set_enabled(&h->node->node, h->enabled);
+		}
+	}
+	slide.hidden_count = 0;
 	some_slide_set_root_bg_visible(slide.root_bg_visible);
 	/* The fullscreen background must reflect the ARRIVING desktop, not the
 	 * pre-slide state: recompute it from the top visible client (the same
@@ -785,6 +1038,8 @@ slide_start(Monitor *m, tag_t *old, int old_backdrop, int old_index, tag_t *new)
 	slide.gap_rect = NULL;
 	slide.static_bg_count = 0;
 	memset(slide.static_bg, 0, sizeof(slide.static_bg));
+	slide.hidden_count = 0;
+	slide.black_warned = false;
 
 	/* Direction by tag index: a higher index enters from the right. The old
 	 * index comes from the snapshot (a deleted focus-space temp tag has no
@@ -828,8 +1083,8 @@ slide_start(Monitor *m, tag_t *old, int old_backdrop, int old_index, tag_t *new)
 	}
 
 	/* Per-desktop backdrops for this screen. */
-	desktop_backdrop_setup(&slide.out, old_backdrop, &m->m);
-	desktop_backdrop_setup(&slide.in, new->backdrop, &m->m);
+	desktop_backdrop_setup(&slide.out, old_backdrop, m, &m->m);
+	desktop_backdrop_setup(&slide.in, new->backdrop, m, &m->m);
 
 	/* The gap strip between the two desktops. */
 	slide.gap_rect = wlr_scene_rect_create(layers[LyrBg],
@@ -840,16 +1095,31 @@ slide_start(Monitor *m, tag_t *old, int old_backdrop, int old_index, tag_t *new)
 
 	/* Static per-screen wallpaper copies for every OTHER monitor, so hiding
 	 * the shared wallpaper (and the root background) does not black them out
-	 * while the slide runs. */
+	 * while the slide runs. Same fallback chain as the desktops: slide-owned
+	 * snapshot → visible wallpaper node → nothing (and the single warning). */
 	{
 		Monitor *o;
 		wl_list_for_each(o, &mons, link) {
+			struct slide_wp_source *osrc;
+			struct wlr_scene_buffer *onode;
 			if (o == m)
 				continue;
 			if (slide.static_bg_count >= SLIDE_MAX_STATIC)
 				break;
-			slide.static_bg[slide.static_bg_count++] =
-				wallpaper_crop_create(&o->m);
+			onode = NULL;
+			osrc = slide_wp_ensure(o);
+			if (osrc)
+				onode = wallpaper_crop_from_source(osrc, &o->m);
+			if (!onode && globalconf.wallpaper_buffer_node)
+				onode = wallpaper_crop_from_node(globalconf.wallpaper_buffer_node, &o->m);
+			if (onode)
+				slide.static_bg[slide.static_bg_count++] = onode;
+			else if (!slide.black_warned) {
+				fprintf(stderr, "somewm: slide: WARNING: no wallpaper "
+					"backdrop available for a static monitor; it will "
+					"show black during the slide\n");
+				slide.black_warned = true;
+			}
 		}
 	}
 
@@ -860,15 +1130,22 @@ slide_start(Monitor *m, tag_t *old, int old_backdrop, int old_index, tag_t *new)
 	slide_layers_capture(m);
 	slide_apply_layers(0, slide.direction * slide.distance);
 
-	/* Take over the global scene visibility: hide the shared wallpaper and
-	 * the root background so everything revealed around the desktops is
-	 * black, and hide the fullscreen background so a fullscreen client's
-	 * black rect cannot cover the incoming desktop sliding in. */
-	slide.wallpaper_visible = globalconf.wallpaper_buffer_node
-		&& globalconf.wallpaper_buffer_node->node.enabled;
+	/* Take over the global scene visibility: record the exact enabled state
+	 * of every wallpaper node (legacy + per-screen cache) and the root
+	 * background, then hide them so everything revealed around the desktops
+	 * is black. Hide the fullscreen background too so a fullscreen client's
+	 * black rect cannot cover the incoming desktop sliding in. Teardown
+	 * restores each wallpaper node and the root background to exactly the
+	 * state recorded here; a node replaced mid-slide (wallpaper change) is
+	 * left as the wallpaper system set it. */
 	if (globalconf.wallpaper_buffer_node)
-		wlr_scene_node_set_enabled(&globalconf.wallpaper_buffer_node->node, false);
-	slide.root_bg_visible = true;
+		slide_hide_wp_node(globalconf.wallpaper_buffer_node, true, -1);
+	for (int si = 0; si < WALLPAPER_MAX_SCREENS; si++) {
+		wallpaper_cache_entry_t *e = globalconf.current_wallpaper_per_screen[si];
+		if (e && e->scene_node)
+			slide_hide_wp_node(e->scene_node, false, si);
+	}
+	slide.root_bg_visible = some_slide_root_bg_visible();
 	some_slide_set_root_bg_visible(false);
 	if (m->fullscreen_bg)
 		wlr_scene_node_set_enabled(&m->fullscreen_bg->node, false);
@@ -1134,6 +1411,10 @@ slide_hot_reload(lua_State *L)
 	if (slide.active)
 		slide_teardown(false);
 	prev_selected_clear_all();
+	/* The wallpaper is about to be rebuilt by the new rc.lua
+	 * (request::wallpaper::connected re-applies it); drop the slide-owned
+	 * wallpaper snapshots so the next slide rebuilds from the fresh surface. */
+	slide_wallpaper_changed();
 	/* The namespace list is re-registered by the new rc.lua via
 	 * slide.set_sliding_layers(); free the old strings so a config that no
 	 * longer opts in cannot leave stale namespaces behind. */

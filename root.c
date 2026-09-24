@@ -22,6 +22,7 @@
 #include "objects/drawin.h"
 #include "objects/client.h"
 #include "objects/screen.h"
+#include "slide.h"
 #include "screenshot_compose.h"
 #include "somewm_types.h"
 #include <xkbcommon/xkbcommon.h>
@@ -1038,9 +1039,15 @@ wallpaper_cache_show(wallpaper_cache_entry_t *entry, int screen_index)
 		wlr_scene_node_set_enabled(&current->scene_node->node, false);
 	}
 
-	/* Also hide legacy wallpaper node if present (global, not per-screen) */
+	/* A cached wallpaper takes over the whole screen, so the legacy wallpaper
+	 * node is no longer what is shown: destroy it and drop the pointer, or
+	 * everything that reads globalconf.wallpaper_buffer_node would act on a
+	 * node that is disabled (or worse, absent) while believing it is the
+	 * current wallpaper. root_set_wallpaper_cached() recreates it when a
+	 * legacy (non-filepath) wallpaper is applied again. */
 	if (globalconf.wallpaper_buffer_node) {
-		wlr_scene_node_set_enabled(&globalconf.wallpaper_buffer_node->node, false);
+		wlr_scene_node_destroy(&globalconf.wallpaper_buffer_node->node);
+		globalconf.wallpaper_buffer_node = NULL;
 	}
 
 	/* Show requested wallpaper */
@@ -1054,6 +1061,10 @@ wallpaper_cache_show(wallpaper_cache_entry_t *entry, int screen_index)
 	if (globalconf.wallpaper)
 		cairo_surface_destroy(globalconf.wallpaper);
 	globalconf.wallpaper = cairo_surface_reference(entry->surface);
+
+	/* The visible wallpaper changed: drop the slide-owned snapshot so the
+	 * next slide builds from this surface. */
+	slide_wallpaper_changed();
 
 	luaA_emit_signal_global("wallpaper_changed");
 	return true;
@@ -1329,6 +1340,10 @@ root_set_wallpaper_cached(lua_State *L, cairo_pattern_t *pattern)
 
 	wlr_buffer_drop(buffer);
 	buffer = NULL;
+
+	/* The visible wallpaper changed: drop the slide-owned snapshot so the
+	 * next slide builds from this surface. */
+	slide_wallpaper_changed();
 
 	luaA_emit_signal_global("wallpaper_changed");
 	result = true;
