@@ -277,11 +277,11 @@ screen.connect_signal("request::wallpaper", function(s)
     end
 end)
 
--- Tag persistence across monitor hotplug
--- The save handler lives in awful.permissions.tag_screen and stores tag
--- metadata into awful.permissions.saved_tags keyed by connector name.
--- To disable or replace it:
---   tag.disconnect_signal("request::screen", awful.permissions.tag_screen)
+-- Workspaces: the fork's macOS Spaces-style dynamic workspaces (lua/somewm).
+-- Each screen starts with one desktop; add/remove/view them with the
+-- `workspace` IPC commands or the workspaces module. No tag names or counts
+-- live in this config.
+require("somewm.workspaces").setup()
 
 -- Wibar
 
@@ -300,41 +300,9 @@ local mytextclock = wibox.widget {
     widget = wibox.container.background,
 }
 
--- Fires once per screen at startup AND on monitor hotplug. Restore saved tags
--- if this connector was previously seen; otherwise create the default set.
+-- Fires once per screen at startup AND on monitor hotplug. The workspaces
+-- module owns the tags; this handler only sets up the per-screen widgets.
 screen.connect_signal("request::desktop_decoration", function(s)
-    -- Restore saved tags if this output was previously removed
-    local output_name = s.output and s.output.name
-    local restore = output_name and awful.permissions.saved_tags[output_name]
-    if restore then
-        awful.permissions.saved_tags[output_name] = nil
-        local client_tags = {}
-        for _, td in ipairs(restore) do
-            local t = awful.tag.add(td.name, {
-                screen = s,
-                layout = td.layout,
-                master_width_factor = td.master_width_factor,
-                master_count = td.master_count,
-                gap = td.gap,
-                selected = td.selected,
-            })
-            for _, c in ipairs(td.clients) do
-                if c.valid then
-                    if not client_tags[c] then
-                        client_tags[c] = {}
-                    end
-                    table.insert(client_tags[c], t)
-                end
-            end
-        end
-        for c, tags in pairs(client_tags) do
-            c:move_to_screen(s)
-            c:tags(tags)
-        end
-    else
-        awful.tag({ "dev", "web", "chat", "files", "media" }, s, awful.layout.layouts[1])
-    end
-
     s.mypromptbox = awful.widget.prompt()
 
     s.mylayoutbox = awful.widget.layoutbox {
@@ -355,12 +323,6 @@ screen.connect_signal("request::desktop_decoration", function(s)
             awful.button({ modkey }, 1, function(t)
                                             if client.focus then
                                                 client.focus:move_to_tag(t)
-                                            end
-                                        end),
-            awful.button({ }, 3, awful.tag.viewtoggle),
-            awful.button({ modkey }, 3, function(t)
-                                            if client.focus then
-                                                client.focus:toggle_tag(t)
                                             end
                                         end),
             awful.button({ }, 4, function(t) awful.tag.viewprev(t.screen) end),
@@ -560,25 +522,6 @@ awful.keyboard.append_global_keybindings({
         key         = "Escape",
         on_press    = awful.tag.history.restore,
         description = "go back",
-        group       = "tag",
-    },
-    awful.key {
-        modifiers   = { modkey, "Shift" },
-        key         = "r",
-        on_press    = function()
-            local s = awful.screen.focused()
-            local t = s.selected_tag
-            if not t then return end
-            awful.prompt.run {
-                prompt       = "Rename tag: ",
-                text         = t.name,
-                textbox      = s.mypromptbox.widget,
-                exe_callback = function(new_name)
-                    if new_name and new_name ~= "" then t.name = new_name end
-                end,
-            }
-        end,
-        description = "rename current tag",
         group       = "tag",
     },
 })
@@ -819,64 +762,27 @@ awful.keyboard.append_global_keybindings({
 
 -- tag (numrow)
 --
--- These bindings work as four Mod variants:
---   Mod+N            view only this tag
---   Mod+Ctrl+N       toggle viewing this tag (multi-tag view)
---   Mod+Shift+N      move focused client to this tag
---   Mod+Ctrl+Shift+N toggle focused client on this tag (one client, many tags)
+-- One selected workspace per screen, like macOS. Mod+N views desktop N,
+-- Mod+Shift+N moves the focused client to desktop N.
 awful.keyboard.append_global_keybindings({
     awful.key {
         modifiers   = { modkey },
         keygroup    = "numrow",
-        description = "only view tag",
+        description = "view desktop",
         group       = "tag",
         on_press    = function(index)
-            local screen = awful.screen.focused()
-            local tag = screen.tags[index]
-            if tag then
-                tag:view_only()
-            end
-        end,
-    },
-    awful.key {
-        modifiers   = { modkey, "Control" },
-        keygroup    = "numrow",
-        description = "toggle tag",
-        group       = "tag",
-        on_press    = function(index)
-            local screen = awful.screen.focused()
-            local tag = screen.tags[index]
-            if tag then
-                awful.tag.viewtoggle(tag)
-            end
+            local workspaces = require("somewm.workspaces")
+            workspaces.view_desktop(index)
         end,
     },
     awful.key {
         modifiers   = { modkey, "Shift" },
         keygroup    = "numrow",
-        description = "move focused client to tag",
+        description = "move focused client to desktop",
         group       = "tag",
         on_press    = function(index)
-            if client.focus then
-                local tag = client.focus.screen.tags[index]
-                if tag then
-                    client.focus:move_to_tag(tag)
-                end
-            end
-        end,
-    },
-    awful.key {
-        modifiers   = { modkey, "Control", "Shift" },
-        keygroup    = "numrow",
-        description = "toggle focused client on tag",
-        group       = "tag",
-        on_press    = function(index)
-            if client.focus then
-                local tag = client.focus.screen.tags[index]
-                if tag then
-                    client.focus:toggle_tag(tag)
-                end
-            end
+            local workspaces = require("somewm.workspaces")
+            workspaces.move_focused(index)
         end,
     },
 })
