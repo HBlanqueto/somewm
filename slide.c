@@ -380,7 +380,13 @@ slide_wp_ensure(Monitor *m)
 	int idx = slide_monitor_screen_index(m);
 	int ex = 0, ey = 0;   /* entry surface origin in layout coordinates */
 
-	if (idx >= 0 && idx < WALLPAPER_MAX_SCREENS)
+	/* The visible wallpaper for a screen is the most recently applied one.
+	 * A legacy (root.wallpaper) application creates globalconf.wallpaper and
+	 * the legacy node; a later per-screen cache show destroys that node, so a
+	 * live legacy node means the legacy surface is still what is shown and
+	 * any cache entry left current is stale. Only when the legacy node is
+	 * gone (the cache path took over) is the per-screen cache surface used. */
+	if (idx >= 0 && idx < WALLPAPER_MAX_SCREENS && !globalconf.wallpaper_buffer_node)
 		entry = globalconf.current_wallpaper_per_screen[idx];
 	if (entry && entry->surface) {
 		src_surface = entry->surface;
