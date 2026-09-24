@@ -43,6 +43,7 @@ read_globals = {
     -- somewm additions
     "layer_surface",
     "output",
+    "slide",
     "systray_item",
     "_gesture",
     "_keygrabber",
