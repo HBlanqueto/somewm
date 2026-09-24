@@ -459,18 +459,33 @@ local function pick_remaining_screen(s)
     return nil
 end
 
--- Focus spaces keep living right after their origin desktop. Called after a
--- screen merge or a desktop removal so a re-pointed space stays adjacent.
-local function reindex_screen(s)
+-- Focus spaces keep living next to their origin desktop; after a removal the
+-- placement follows focus_space.placement ("after_origin" sits right after the
+-- re-pointed origin, "end" goes to the end of the list). Called after a
+-- screen merge or a desktop removal so re-pointed spaces stay in place.
+local function reindex_screen(s, placement)
     local se = state.screens[connector(s)]
     if not se then return end
     local desired = {}
-    for _, d in ipairs(se.desktops) do
-        if tag_alive(d.tag) then
-            desired[#desired + 1] = d.tag
-            for _, f in ipairs(se.focus) do
-                if f.origin_id == d.id and tag_alive(f.tag) then
-                    desired[#desired + 1] = f.tag
+    if placement == "end" then
+        for _, d in ipairs(se.desktops) do
+            if tag_alive(d.tag) then
+                desired[#desired + 1] = d.tag
+            end
+        end
+        for _, f in ipairs(se.focus) do
+            if tag_alive(f.tag) then
+                desired[#desired + 1] = f.tag
+            end
+        end
+    else
+        for _, d in ipairs(se.desktops) do
+            if tag_alive(d.tag) then
+                desired[#desired + 1] = d.tag
+                for _, f in ipairs(se.focus) do
+                    if f.origin_id == d.id and tag_alive(f.tag) then
+                        desired[#desired + 1] = f.tag
+                    end
                 end
             end
         end
@@ -480,6 +495,20 @@ local function reindex_screen(s)
             t.index = i
         end
     end
+end
+
+-- Desired focus-space placement after a desktop removal, from the config's
+-- settings.json ("focus_space.placement"); defaults to after_origin.
+local function focus_placement()
+    local ok, settings = pcall(require, "core.settings")
+    if ok and type(settings) == "table" and type(settings.get) == "function" then
+        local fp = settings.get("focus_space")
+        if type(fp) == "table" then
+            local p = fp.placement
+            if p == "after_origin" or p == "end" then return p end
+        end
+    end
+    return "after_origin"
 end
 
 -- ---------------------------------------------------------------------------
@@ -692,7 +721,12 @@ function M.enter_focus_space(c, origin, origin_index)
         index = idx + 1,
         screen = screen,
         layout = awful.layout.suit.max,
-        volatile = true,
+        -- NOT volatile: a volatile focus tag is auto-deleted by awful on the
+        -- client's "untagged" signal (before the compositor's close/unmanage
+        -- handler can react), and tag.delete then selects the screen's first
+        -- tag instead of letting the close path choose the space to land on.
+        -- The focus-space module owns the lifecycle via drop_temp_tag.
+        volatile = false,
     })
     if not tag then return nil end
     tag.backdrop = "black"
@@ -726,6 +760,9 @@ function M.add(s)
     s = s or awful.screen.focused()
     if not s then return nil, "no screen" end
     local se = screen_state(s)
+    if #se.desktops + #se.focus >= 16 then
+        return nil, "screen already has 16 workspaces"
+    end
     local n = #se.desktops + 1
     local t = awful.tag.add(("desktop_%02d"):format(n), {
         screen = s,
@@ -830,6 +867,7 @@ function M.remove(id)
     desktops_by_tag[entry.tag] = nil
     table.remove(se.desktops, idx)
     renumber(se)
+    reindex_screen(screen, focus_placement())
     changed(true)
     return true, "removed"
 end
@@ -1118,8 +1156,22 @@ local function on_desktop_decoration(s)
         end
     end
     -- Drop focus spaces that could not be re-attached (client gone or not
-    -- maximized): they no longer exist as live spaces.
+    -- maximized): they no longer exist as live spaces. Focus tags are not
+    -- volatile (the close/leave path owns their deletion), so sweep any
+    -- still-alive empty tag of a dropped space as a safety net.
     if #se.focus ~= #adopted then
+        for _, f in ipairs(se.focus) do
+            local dropped = true
+            for _, a in ipairs(adopted) do
+                if a == f then dropped = false break end
+            end
+            if dropped and tag_alive(f.tag) then
+                local ok, count = pcall(function() return #f.tag:clients() end)
+                if ok and count == 0 then
+                    pcall(function() f.tag:delete() end)
+                end
+            end
+        end
         se.focus = adopted
         structural = true
     end
