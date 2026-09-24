@@ -37,6 +37,14 @@ build of this repo; ~/nixdots pins it as a flake input.
   `screen.content` composite in software and are wrong under GLES2.
 - Take a baseline of `make test-restart` and `make check-qa` before changing C,
   and compare after.
+- Nested tests must ALWAYS use an isolated XDG_STATE_HOME (and XDG_CACHE_HOME,
+  XDG_DATA_HOME) inside the instance runtime: sharing the live ones lets a nested
+  persist overwrite the live ~/.local/state/somewm/workspaces.json or the
+  autostart.started marker. Nested configs must also never run the real
+  autostart (the live config spawns `quickshell -n`); run the instance with a
+  test config that pre-sets package.loaded["core.autostart"] before loading the
+  personal rc.lua (a LUA_PATH shadow does NOT work: the C loader puts the
+  config dir first). The orchestrator sets the XDG state dirs itself.
 - Test artifacts go to /tmp, never into the repo.
 
 ## Code
