@@ -43,6 +43,27 @@ ease_in_out_cubic(double t)
 	return 1.0 - inv * inv * inv / 2.0;
 }
 
+/* Normalized critically-damped spring (k=7). The raw step response
+ * 1 - e^(-kt)(1+kt) is divided by its value at t=1, so the curve is exactly
+ * 0 at t=0 and exactly 1 at t=1: no end jump, no overshoot (the derivative
+ * k^2 t e^(-kt) >= 0 on [0,1]). t is clamped to [0,1]. */
+static double
+ease_spring(double t)
+{
+	const double k = 7.0;
+	double denom;
+
+	if (t < 0.0)
+		t = 0.0;
+	else if (t > 1.0)
+		t = 1.0;
+
+	denom = 1.0 - exp(-k) * (1.0 + k);
+	if (denom == 0.0)
+		return t;
+	return (1.0 - exp(-k * t) * (1.0 + k * t)) / denom;
+}
+
 static double
 apply_easing(int easing, double t)
 {
@@ -50,6 +71,7 @@ apply_easing(int easing, double t)
 	case EASING_LINEAR:         return ease_linear(t);
 	case EASING_EASE_OUT_CUBIC: return ease_out_cubic(t);
 	case EASING_EASE_IN_OUT_CUBIC: return ease_in_out_cubic(t);
+	case EASING_SPRING:         return ease_spring(t);
 	default:                    return t;
 	}
 }
@@ -70,6 +92,10 @@ parse_easing(const char *str)
 		return EASING_EASE_OUT_CUBIC;
 	if (strcmp(str, "ease-in-out-cubic") == 0)
 		return EASING_EASE_IN_OUT_CUBIC;
+	if (strcmp(str, "spring") == 0
+			|| strcmp(str, "spring-critical") == 0
+			|| strcmp(str, "macos") == 0)
+		return EASING_SPRING;
 	return EASING_LINEAR;
 }
 

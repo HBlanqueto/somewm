@@ -1165,6 +1165,10 @@ luaA_slide_set_easing(lua_State *L)
 		slide_easing = EASING_EASE_OUT_CUBIC;
 	else if (strcmp(e, "ease-in-out-cubic") == 0)
 		slide_easing = EASING_EASE_IN_OUT_CUBIC;
+	else if (strcmp(e, "spring") == 0
+			|| strcmp(e, "spring-critical") == 0
+			|| strcmp(e, "macos") == 0)
+		slide_easing = EASING_SPRING;
 	return 0;
 }
 
@@ -1174,6 +1178,9 @@ luaA_slide_get_easing(lua_State *L)
 	switch (slide_easing) {
 	case EASING_LINEAR:
 		lua_pushliteral(L, "linear");
+		break;
+	case EASING_SPRING:
+		lua_pushliteral(L, "spring");
 		break;
 	case EASING_EASE_IN_OUT_CUBIC:
 		lua_pushliteral(L, "ease-in-out-cubic");

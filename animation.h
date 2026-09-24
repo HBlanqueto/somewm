@@ -21,6 +21,9 @@ enum animation_easing {
     EASING_LINEAR,
     EASING_EASE_OUT_CUBIC,
     EASING_EASE_IN_OUT_CUBIC,
+    /* Normalized critically-damped spring, ending exactly at 1.0. Accepted
+     * under the names "spring" and "spring-critical"; "macos" is an alias. */
+    EASING_SPRING,
 };
 
 /** Evaluate an easing curve (shared with the tag-slide driver) */
