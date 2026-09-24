@@ -511,6 +511,20 @@ local function focus_placement()
     return "after_origin"
 end
 
+-- Workspace cap for a screen (desktops + focus spaces), read from the same
+-- settings.json the widget consumes ("<workspaces>.max") so M.add and the
+-- bar's add button never disagree. Defaults to 16 when absent.
+local function workspaces_max()
+    local ok, settings = pcall(require, "core.settings")
+    if ok and type(settings) == "table" and type(settings.get) == "function" then
+        local ws = settings.get("workspaces")
+        if type(ws) == "table" and type(ws.max) == "number" and ws.max >= 1 then
+            return math.floor(ws.max)
+        end
+    end
+    return 16
+end
+
 -- ---------------------------------------------------------------------------
 -- Signals
 -- ---------------------------------------------------------------------------
@@ -622,6 +636,7 @@ function M.snapshot()
         out.screens[#out.screens + 1] = {
             screen = s.index,
             name = s.output and s.output.name or "",
+            max = workspaces_max(),
             workspaces = ws,
         }
     end
@@ -760,8 +775,9 @@ function M.add(s)
     s = s or awful.screen.focused()
     if not s then return nil, "no screen" end
     local se = screen_state(s)
-    if #se.desktops + #se.focus >= 16 then
-        return nil, "screen already has 16 workspaces"
+    local max = workspaces_max()
+    if #se.desktops + #se.focus >= max then
+        return nil, ("screen already has %d workspaces"):format(max)
     end
     local n = #se.desktops + 1
     local t = awful.tag.add(("desktop_%02d"):format(n), {
