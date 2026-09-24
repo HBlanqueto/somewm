@@ -4,11 +4,17 @@ somewm fork (C, wlroots 0.20, SceneFX 0.5, LuaJIT). The live session runs the Ni
 build of this repo; ~/nixdots pins it as a flake input.
 
 ## Git
-- One branch per task, from release/1.4. Never commit to release/1.4 directly.
-- Never push, merge, rebase or force-push. Stop when tests pass and report; the
-  user merges and deploys.
+- Default: work and commit directly on release/1.4. Use a separate branch only when
+  I explicitly ask for one in the task.
+- Commit in small logical steps (English messages, one logical change per commit).
+- Push release/1.4 to origin when the task's tests pass. Report the pushed hash.
+- Never rebase, force-push or rewrite history on release/1.4.
+- If release/1.4 moved on origin, pull with a merge (no rebase) before pushing. If there are
+  conflicts, stop and report.
 
 ## The live session is off-limits
+- These rules apply unless the task explicitly grants live-session access; then follow
+  exactly the permissions written in that task, and nothing more.
 - Your shell inherits the live SOMEWM_SOCKET and WAYLAND_DISPLAY. Talk to test
   instances only through `somewm-client test <cmd> --name <instance>`; never run
   bare `somewm-client eval|reload|screenshot`, and run `grim` only with the test
@@ -16,8 +22,9 @@ build of this repo; ~/nixdots pins it as a flake input.
 - No `pkill -f`, `killall` or `pgrep | xargs kill` (this includes
   `test-nested.sh stop|restart`). Stop instances with `somewm-client test stop`
   or `kill` on a PID you started. Leave no instance running.
-- Never run nixos-rebuild, `nix flake update` or flake-update-sw, and never edit
-  ~/.config/somewm, ~/.config/quickshell or ~/nixdots from this repo.
+- Never run nixos-rebuild, `nix flake update` or flake-update-sw, and never edit ~/nixdots.
+- Edit ~/.config/somewm or ~/.config/quickshell only when the task asks for it: back up each
+  file as <name>.bak-<task>, show the diff, and save only after my OK.
 
 ## Build and test
 - Work inside `nix develop`. build-test must match the Nix package:
