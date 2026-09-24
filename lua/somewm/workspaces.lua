@@ -237,6 +237,35 @@ local state_dir = os.getenv("XDG_STATE_HOME")
     or "/tmp"
 local last_serialized = nil
 
+-- Rapid-switch queue: presses arriving while a slide runs are deferred and
+-- replayed as chained (faster) slides after each one completes, so a burst
+-- never cuts a slide short. Direction reversal drops the pending steps.
+local step_queue = {}
+local STEP_QUEUE_DEPTH = 4
+local CHAIN_FACTOR = 0.6
+local CHAIN_FLOOR = 0.15
+local base_duration = nil
+
+local function slide_last_duration()
+    local dur = type(slide) == "table" and type(slide.duration) == "function"
+        and slide.duration() or nil
+    return type(dur) == "number" and dur or nil
+end
+
+local function slide_set_duration(d)
+    if type(slide) == "table" and type(slide.set_duration) == "function" then
+        pcall(slide.set_duration, d)
+    end
+end
+
+local function slide_running()
+    if type(slide) ~= "table" or type(slide.active) ~= "function" then
+        return false
+    end
+    local ok, on = pcall(slide.active)
+    return ok and on == true
+end
+
 local function state_file()
     return state_dir .. "/somewm/workspaces.json"
 end
@@ -838,8 +867,9 @@ local function visible_tags(s)
     return tags
 end
 
--- Step one workspace in `dir` (1 = next, -1 = prev). Hard edges: past the
--- first/last workspace it is a no-op (false, no selection change, no slide).
+-- Step one workspace in `dir` (1 = next, -1 = prev). When no slide is running
+-- this is a normal view (full duration); while a slide runs the step is queued
+-- and replayed by on_slide_end as a chained slide. Hard edges stay no-ops.
 local function step(dir, s)
     s = s or awful.screen.focused()
     if not s then return false, "no screen" end
@@ -851,10 +881,60 @@ local function step(dir, s)
         if t == sel then idx = i break end
     end
     if not idx then return false, "selected workspace not in list" end
-    local target = tags[idx + dir]
-    if not tag_alive(target) then return false end
-    target:view_only()
+    if not tag_alive(tags[idx + dir]) then return false end
+    if slide_running() then
+        if dir ~= step_queue[#step_queue] then
+            step_queue = {}
+        end
+        if #step_queue >= STEP_QUEUE_DEPTH then
+            table.remove(step_queue, 1)
+        end
+        step_queue[#step_queue + 1] = dir
+        return true
+    end
+    if not base_duration then base_duration = slide_last_duration() end
+    if base_duration then slide_set_duration(base_duration) end
+    tags[idx + dir]:view_only()
     return true
+end
+
+local chain_step
+
+-- Pop the next queued step and play it as a chained (faster) slide.
+chain_step = function()
+    local dir = table.remove(step_queue, 1)
+    if not dir then
+        if base_duration then slide_set_duration(base_duration) end
+        return
+    end
+    local s = awful.screen.focused()
+    if not s then return end
+    local tags = visible_tags(s)
+    local sel = s.selected_tag
+    if not tag_alive(sel) then
+        step_queue = {}
+        return
+    end
+    local idx
+    for i, t in ipairs(tags) do
+        if t == sel then idx = i break end
+    end
+    local target = idx and tags[idx + dir]
+    if not tag_alive(target) then
+        -- Skip steps the edge or another view already absorbed.
+        return chain_step()
+    end
+    local chain = CHAIN_FLOOR
+    local base = base_duration or slide_last_duration()
+    if base then
+        chain = math.max(CHAIN_FLOOR, base * CHAIN_FACTOR)
+    end
+    slide_set_duration(chain)
+    target:view_only()
+end
+
+local function on_slide_end()
+    if #step_queue > 0 then chain_step() end
 end
 
 function M.next(s)
@@ -1080,6 +1160,7 @@ function M.setup(opts)
     tag.connect_signal("property::backdrop", function() resync() end)
     tag.connect_signal("request::screen", on_tag_screen_removed)
     screen.connect_signal("removed", on_screen_removed)
+    tag.connect_signal("slide_end", on_slide_end)
 
     screen.connect_signal("request::desktop_decoration", on_desktop_decoration)
 
