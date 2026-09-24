@@ -587,18 +587,39 @@ slide_layers_teardown(void)
  * (old_tag, new_tag, direction) as arguments. old_tag may be nil when the
  * outgoing tag was deleted (focus-space leave). luaA_object_emit_signal()
  * pops only the arguments and leaves the object on the stack, so pop exactly
- * it. */
+ * it.
+ *
+ * Never push or emit on a dead tag or a collected Lua object: a tag removed
+ * from globalconf.tags (or deactivated) must not receive a signal, and
+ * luaA_object_push() of an object whose userdata was collected yields nil,
+ * which would make luaA_object_emit_signal() fire on the wrong stack value.
+ * Both are checked before anything is pushed. */
 static void
 emit_slide_signal(const char *name, tag_t *old, tag_t *new, int direction)
 {
 	lua_State *L = globalconf_get_lua_State();
-	if (!L || !new)
+
+	if (!L || !new || !tag_is_alive(new))
 		return;
+	if (old && !tag_is_alive(old))
+		old = NULL; /* deleted tag: pass nil, matching a focus-space leave */
+
 	luaA_object_push(L, new);
-	if (old)
+	if (lua_type(L, -1) != LUA_TUSERDATA) {
+		lua_pop(L, 1);
+		return; /* Lua object was collected */
+	}
+
+	if (old) {
 		luaA_object_push(L, old);
-	else
+		if (lua_type(L, -1) != LUA_TUSERDATA) {
+			lua_pop(L, 2);
+			return; /* Lua object was collected */
+		}
+	} else {
 		lua_pushnil(L);
+	}
+
 	luaA_object_push(L, new);
 	lua_pushinteger(L, direction);
 	luaA_object_emit_signal(L, -4, name, 3);
