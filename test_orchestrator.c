@@ -566,6 +566,21 @@ exec_child(const struct start_opts *opts, const char *state_dir,
 	}
 
 	setenv("XDG_RUNTIME_DIR", runtime_subdir, 1);
+	/* Sandbox the XDG base dirs too: the config under test otherwise shares
+	 * XDG_STATE_HOME/XDG_CACHE_HOME/XDG_DATA_HOME with the live session and a
+	 * nested persist overwrites the live workspaces.json or autostart marker. */
+	do {
+		char dir[PATH_MAX + 64];
+		snprintf(dir, sizeof(dir), "%s/state", runtime_subdir);
+		mkdir_p(dir, 0700);
+		setenv("XDG_STATE_HOME", dir, 1);
+		snprintf(dir, sizeof(dir), "%s/cache", runtime_subdir);
+		mkdir_p(dir, 0700);
+		setenv("XDG_CACHE_HOME", dir, 1);
+		snprintf(dir, sizeof(dir), "%s/data", runtime_subdir);
+		mkdir_p(dir, 0700);
+		setenv("XDG_DATA_HOME", dir, 1);
+	} while (0);
 	setenv("SOMEWM_SOCKET", sock_path, 1);
 	setenv("SOMEWM_TEST_NAME", opts->name, 1);
 	setenv("SOMEWM_TEST_STATE_DIR", state_dir, 1);
