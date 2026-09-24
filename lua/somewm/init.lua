@@ -14,6 +14,7 @@
 local submodules = {
     layout_animation = "somewm.layout_animation",
     fade             = "somewm.fade",
+    workspaces       = "somewm.workspaces",
 }
 
 return setmetatable({}, {
