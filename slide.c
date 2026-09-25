@@ -1172,6 +1172,10 @@ slide_start(Monitor *m, tag_t *old, int old_backdrop, int old_index, tag_t *new)
 		focusclient(c, 0);
 	motionnotify(0, NULL, 0, 0, 0, 0);
 
+	/* Apply eased=0 once now so the first presented frame shows the departure
+	 * posture; without it the incoming page can sit on screen one frame. */
+	slide_apply(0);
+
 	emit_slide_signal("slide_start", old, new, slide.direction);
 
 	/* Drive from output frames (vsync); the 1 ms timer is the fallback. */
