@@ -43,6 +43,38 @@ typedef struct drawable_t drawable_t;
 typedef struct Monitor Monitor;
 struct wlr_foreign_toplevel_handle_v1;
 
+/* Per-client native macOS frame nodes (macos_frame.c owns the internals;
+ * the rest of the compositor only calls the macos_frame.h functions). */
+struct macos_frame_nodes {
+	/* Outer stroke: one cached ring buffer, 1 px outside the window edge. */
+	struct wlr_scene_buffer *stroke;
+	struct wlr_buffer *stroke_buf;
+	int stroke_w, stroke_h;
+	int stroke_radii[4];
+	float stroke_color[4];
+	int stroke_cache_dark;      /* -1 = cache empty */
+
+	/* Inner highlight: one cached ring buffer, 1 px inside the edge. The node
+	 * only exists in dark appearance ("no node" in light mode). */
+	struct wlr_scene_buffer *highlight;
+	struct wlr_buffer *highlight_buf;
+	int hl_w, hl_h;
+	int hl_radii[4];
+
+	/* Two SceneFX shadow layers (focus/unfocus sets are the same two nodes,
+	 * re-parameterized). */
+	struct wlr_scene_tree *shadow_tree;
+	struct wlr_scene_shadow *shadow[2];
+	int shadow_w, shadow_h;
+	int shadow_corner;          /* cached frame corner radius */
+	bool shadow_focused;
+	int shadow_cache_dark;      /* -1 = cache empty */
+	float shadow_fade;          /* window-opacity fade, 1.0 = full */
+
+	/* Cached resolution at the last update, so a no-op refresh is free. */
+	bool shown;                 /* monitor-clamp visibility, default true */
+};
+
 /* Type compatibility - map AwesomeWM types to Wayland types */
 typedef struct wlr_box area_t;
 
@@ -188,6 +220,12 @@ struct client_t
     blur_nodes_t blur;
     /** True rounded-corner crop state (content, titlebars, border ring) */
     rounded_crop_t crop;
+    /** Native macOS Big Sur frame nodes (stroke, highlight, shadows). Only
+     * macos_frame.c touches the internals. */
+    struct macos_frame_nodes macos_frame;
+    /** Per-window appearance override ("dark"/"light"); 0 = follow the global
+     * somewm.appearance, 1 = dark, 2 = light. */
+    int frame_appearance;
     /** Per-buffer rounded copies for child (sub)surfaces in the client tree.
      * Firefox renders its whole window in a wl_subsurface, so rounding only
      * the toplevel leaves square corners in the pixels actually visible.

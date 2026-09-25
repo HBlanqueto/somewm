@@ -276,6 +276,12 @@ typedef struct
 
     /** Appearance settings (beautiful theme integration) */
     struct {
+        /** Global appearance mode: true = "dark" (the default when nothing
+         *  sets it), false = "light". somewm.appearance writes this; effects
+         *  query it via appearance_is_dark(). */
+        bool appearance_dark;
+        /** Native macOS frame on/off (beautiful.macos_frame, default on). */
+        bool macos_frame_enabled;
         unsigned int border_width;    /* Window border thickness in pixels */
         unsigned int border_inner_width; /* Inner hairline width (0 = off) */
         float border_inner_color[4];  /* Inner hairline RGBA */

@@ -112,6 +112,7 @@
 #include "../window.h"
 #include "objects/spawn.h"
 #include "../property.h"
+#include "../macos_frame.h"
 #include "../screenshot_compose.h"
 #include "../dominant_color.h"
 
@@ -4809,6 +4810,59 @@ luaA_client_set_backdrop_blur(lua_State *L, client_t *c)
     return 0;
 }
 
+/** Get the client's per-window macOS frame appearance override.
+ * \param L The Lua VM state.
+ * \param c The client.
+ * \return Number of elements pushed on stack (0 = nil, follow the global).
+ */
+static int
+luaA_client_get_frame_appearance(lua_State *L, client_t *c)
+{
+    if (c->frame_appearance == 1) {
+        lua_pushliteral(L, "dark");
+        return 1;
+    }
+    if (c->frame_appearance == 2) {
+        lua_pushliteral(L, "light");
+        return 1;
+    }
+    return 0;
+}
+
+/** Set the client's per-window macOS frame appearance override.
+ * "dark"/"light" override the global somewm.appearance for this client only;
+ * nil clears the override. Invalid values log a warning and are ignored.
+ * Repaints only this client's frame.
+ * \param L The Lua VM state.
+ * \param c The client.
+ * \return Number of elements pushed on stack.
+ */
+static int
+luaA_client_set_frame_appearance(lua_State *L, client_t *c)
+{
+    int old = c->frame_appearance;
+
+    if (lua_isnil(L, -1)) {
+        c->frame_appearance = 0;
+    } else {
+        const char *val = luaL_checkstring(L, -1);
+        if (A_STREQ(val, "dark"))
+            c->frame_appearance = 1;
+        else if (A_STREQ(val, "light"))
+            c->frame_appearance = 2;
+        else {
+            warn("c.frame_appearance: invalid value '%s' "
+                "(expected \"dark\" or \"light\"); keeping current", val);
+            return 0;
+        }
+    }
+
+    if (c->frame_appearance != old)
+        client_macos_frame_repaint(c);
+    luaA_object_emit_signal(L, -3, "property::frame_appearance", 0);
+    return 0;
+}
+
 static int
 luaA_client_set_skip_taskbar(lua_State *L, client_t *c)
 {
@@ -5787,6 +5841,7 @@ client_class_setup(lua_State *L)
         { "content", NULL, (lua_class_propfunc_t) luaA_client_get_content, NULL },
         { "first_tag", NULL, (lua_class_propfunc_t) luaA_client_get_first_tag, NULL },
         { "focusable", (lua_class_propfunc_t) luaA_client_set_focusable, (lua_class_propfunc_t) luaA_client_get_focusable, (lua_class_propfunc_t) luaA_client_set_focusable },
+        { "frame_appearance", (lua_class_propfunc_t) luaA_client_set_frame_appearance, (lua_class_propfunc_t) luaA_client_get_frame_appearance, (lua_class_propfunc_t) luaA_client_set_frame_appearance },
         { "fullscreen", (lua_class_propfunc_t) luaA_client_set_fullscreen, (lua_class_propfunc_t) luaA_client_get_fullscreen, (lua_class_propfunc_t) luaA_client_set_fullscreen },
         { "group_window", NULL, (lua_class_propfunc_t) luaA_client_get_group_window, NULL },
         { "hidden", (lua_class_propfunc_t) luaA_client_set_hidden, (lua_class_propfunc_t) luaA_client_get_hidden, (lua_class_propfunc_t) luaA_client_set_hidden },

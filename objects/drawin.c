@@ -2006,84 +2006,21 @@ luaA_drawin_apply_geometry(drawin_t *drawin)
 	} */
 }
 
-/* macOS-style inner hairline for a drawin: a thin line hugging the content
- * edge, above the content (the border ring sits below it). Input-transparent,
- * zero-geometry pure decoration. border_inner_width == 0 turns it off.
- * Called from drawin_border_refresh_single(), which itself only runs when
- * the drawin's border_need_update flag is set, so this always re-renders. */
+/* macOS-style inner hairline for a drawin: removed along with the client
+ * hairline (the native macOS frame owns the single inner contour now). Kept
+ * as a no-op that hides any node left over from a previous build/hot reload. */
+static bool drawin_innerline_deprecated_warned;
+
 static void
 drawin_innerline_refresh(drawin_t *d)
 {
-	const rounded_config_t *rcfg;
-	int radii[4], cw, ch, bw;
-	float eff[4];
-	double lw = d->border_inner_width;
-
-	cw = d->width;
-	ch = d->height;
-	bw = d->border_width;
-
-	/* Hide hairline when disabled or when the drawin has no surface yet */
-	if (!d->border_inner_enabled || lw <= 0.0 || cw <= 0 || ch <= 0
-			|| !d->scene_tree || !d->scene_buffer) {
-		if (d->innerline_buffer)
-			wlr_scene_node_set_enabled(&d->innerline_buffer->node, false);
-		return;
+	if (!drawin_innerline_deprecated_warned) {
+		drawin_innerline_deprecated_warned = true;
+		warn("border_inner_* is deprecated: the native macOS frame owns the "
+			"inner contour now; the value is ignored");
 	}
-
-	/* Hairline radii mirror the content punch gate (drawin_refresh_drawable):
-	 * an explicit corner_radius wins; a drawin carrying a Lua shape owns its
-	 * own geometry and gets a square hairline; only un-shaped drawins fall
-	 * back to the global drawin radius. Content radii == config radii minus
-	 * the outer border width, clamped exactly like drawin_render_border()
-	 * does. The renderer then insets these by the hairline width so its outer
-	 * edge shares the content's corner arcs. */
-	if (!d->rounded_config && (d->shape_clip || d->shape_bounding)) {
-		for (int i = 0; i < 4; i++)
-			radii[i] = 0;
-	} else {
-		rcfg = rounded_get_effective_config(d->rounded_config, true);
-		for (int i = 0; i < 4; i++) {
-			radii[i] = (rcfg && rounded_config_active(rcfg))
-				? (rcfg->radii[i] < 0 ? 0 : rcfg->radii[i]) : 0;
-			radii[i] -= bw;
-			if (radii[i] < 0)
-				radii[i] = 0;
-		}
-	}
-
-	if (d->border_inner_color.initialized)
-		color_to_floats(&d->border_inner_color, eff);
-	else {
-		const float *base = get_border_inner_color();
-		for (int i = 0; i < 4; i++)
-			eff[i] = base[i];
-	}
-
-	if (!d->innerline_buffer) {
-		d->innerline_buffer = wlr_scene_buffer_create(d->scene_tree, NULL);
-		if (!d->innerline_buffer)
-			return;
-		d->innerline_buffer->point_accepts_input = border_point_accepts_input;
-		wlr_scene_buffer_set_filter_mode(d->innerline_buffer,
-			WLR_SCALE_FILTER_BILINEAR);
-		/* Above content; border and shadow stay below. */
-		wlr_scene_node_place_above(&d->innerline_buffer->node,
-			&d->scene_buffer->node);
-	}
-
-	struct wlr_buffer *buf = rounded_crop_render_innerline(cw, ch, bw, radii,
-		lw, eff);
-	if (!buf) {
-		if (d->innerline_buffer)
-			wlr_scene_node_set_enabled(&d->innerline_buffer->node, false);
-		return;
-	}
-	wlr_scene_buffer_set_buffer(d->innerline_buffer, buf);
-	wlr_buffer_drop(buf);  /* Scene buffer holds its own reference */
-	wlr_scene_buffer_set_dest_size(d->innerline_buffer, cw, ch);
-	wlr_scene_node_set_position(&d->innerline_buffer->node, 0, 0);
-	wlr_scene_node_set_enabled(&d->innerline_buffer->node, true);
+	if (d && d->innerline_buffer)
+		wlr_scene_node_set_enabled(&d->innerline_buffer->node, false);
 }
 
 /** Refresh a single drawin's border visuals

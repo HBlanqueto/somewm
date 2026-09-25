@@ -121,10 +121,35 @@ runner.run_async(function()
 
     info = awesome._scenefx_info(c)
     tl, tr, br, bl = radii(info)
+    -- The native macOS frame owns the corner radius while it is active: with
+    -- a top titlebar present, corner_radius=false leaves the frame's 10 px
+    -- rounding (10 - border_width 4 = 6) on the corners the titlebar does
+    -- not cover (content top stays square under the bar, like TEST 2).
+    assert(tl == 0 and tr == 0 and br == 6 and bl == 6,
+        string.format("expected frame radii 0/0/6/6, got %s/%s/%s/%s",
+            tostring(tl), tostring(tr), tostring(br), tostring(bl)))
+    local tb3 = awesome._scenefx_info(c).titlebars[1]
+    assert(tb3 and tb3.tl == 6 and tb3.tr == 6 and tb3.br == 0 and tb3.bl == 0,
+        string.format("expected top titlebar radii 6/6/0/0, got %s/%s/%s/%s",
+            tostring(tb3 and tb3.tl), tostring(tb3 and tb3.tr),
+            tostring(tb3 and tb3.br), tostring(tb3 and tb3.bl)))
+
+    -- Disabling the whole frame restores the legacy crop semantics: with the
+    -- frame off, corner_radius=false clears every radius.
+    local beautiful = require("beautiful")
+    beautiful.macos_frame = false
+    awesome.corner_reload()
+    async.sleep(0.2)
+
+    info = awesome._scenefx_info(c)
+    tl, tr, br, bl = radii(info)
     assert(tl == 0 and tr == 0 and br == 0 and bl == 0,
         "expected zero radii after disabling")
 
-    io.stderr:write("[TEST 3] PASS\n")
+    beautiful.macos_frame = nil
+    awesome.corner_reload()
+
+    io.stderr:write("[TEST 3] PASS frame=0/0/6/6 off=0/0/0/0\n")
     assert(cleanup(c), "cleanup: client did not close")
 
     ---------------------------------------------------------------------------

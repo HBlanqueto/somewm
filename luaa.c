@@ -44,6 +44,7 @@
 #include "dbus.h"
 #include "shadow.h"
 #include "rounded.h"
+#include "macos_frame.h"
 #include "blur.h"
 #include "window.h"
 #include "pam_auth.h"
@@ -1541,6 +1542,10 @@ luaA_awesome_corner_reload(lua_State *L)
 {
 	/* Reload config from beautiful */
 	rounded_load_beautiful_defaults(L);
+
+	/* The native macOS frame switch also lives in beautiful; re-read it and
+	 * re-apply so a runtime beautiful.macos_frame toggle takes effect. */
+	macos_frame_load_beautiful_defaults(L);
 
 	/* Update all existing client corners (true crop: content, titlebars,
 	 * border ring) */
@@ -3387,6 +3392,7 @@ luaA_register_state(lua_State *L)
 	animation_setup(L);  /* Metatable for awesome.start_animation handles */
 	slide_setup(L);      /* Global `slide` config/control API */
 	reveal_setup(L);     /* Global `reveal` API (bar/notch reveal driver) */
+	somewm_setup(L);     /* Global `somewm` object (appearance mode) */
 
 	/* Setup selection classes (must be before selection_setup) */
 	selection_getter_class_setup(L);
@@ -5716,6 +5722,9 @@ luaA_loadrc(void)
 
 			/* Load rounded corner defaults from beautiful theme */
 			rounded_load_beautiful_defaults(globalconf_L);
+
+			/* Load the native macOS frame switch from beautiful theme */
+			macos_frame_load_beautiful_defaults(globalconf_L);
 
 			loaded = 1;
 			break;

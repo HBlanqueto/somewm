@@ -27,6 +27,7 @@
 #include "objects/window.h"
 #include "color.h"
 #include "rounded.h"
+#include "macos_frame.h"
 
 #include "luaa.h"
 #include "common/luaobject.h"
@@ -138,6 +139,8 @@ bool
 get_border_inner_enabled(void)
 {
 	lua_State *L = globalconf_get_lua_State();
+	static bool deprecated_warned;
+
 	if (!L) return globalconf.appearance.border_inner_enabled;
 
 	lua_getglobal(L, "require");
@@ -149,6 +152,11 @@ get_border_inner_enabled(void)
 	if (lua_istable(L, -1)) {
 		lua_getfield(L, -1, "border_inner_enabled");
 		if (!lua_isnil(L, -1)) {
+			if (!deprecated_warned) {
+				deprecated_warned = true;
+				warn("beautiful.border_inner_* is deprecated: the native "
+					"macOS frame owns the inner contour now; ignored");
+			}
 			bool val = lua_toboolean(L, -1);
 			lua_pop(L, 2);
 			return val;
@@ -217,6 +225,14 @@ client_crop_radii(Client *c, int radii[4])
 	const rounded_config_t *cfg =
 		rounded_get_effective_config(c->rounded_config, false);
 	int i, any = 0;
+
+	/* The built-in macOS frame clips content and titlebars to its own radius
+	 * (per-client corner_radius override, else the 10 px Big Sur constant),
+	 * so it owns the corner shape while active. */
+	if (client_macos_frame_active(c)) {
+		client_macos_frame_radii(c, radii);
+		return true;
+	}
 
 	for (i = 0; i < 4; i++)
 		radii[i] = cfg ? cfg->radii[i] : 0;
@@ -919,119 +935,24 @@ client_crop_update_ring(Client *c, int frame_w, int frame_h)
 	wlr_scene_node_set_enabled(&c->crop.ring->node, true);
 }
 
-/* The inner hairline is pure decoration; it must never intercept clicks
- * (reuse ring_point_accepts_input above). */
-static bool
-innerline_point_accepts_input(struct wlr_scene_buffer *buffer, double *sx,
-                              double *sy)
-{
-	(void)buffer;
-	(void)sx;
-	(void)sy;
-	return false;
-}
-
-/* Whether the inner hairline belongs on screen right now: enabled for this
- * client, a positive width, not fullscreen, and backed by a rendered buffer
- * at the current geometry. client_crop_update_innerline() hides the node when
- * this is false; callers that re-enable nodes from outside it (the per-monitor
- * clip passes in apply_geometry_to_wlroots) MUST gate on this too, otherwise a
- * stale buffer gets re-enabled and ghost-paints the old frame. */
+/* Whether the inner hairline belongs on screen right now: the old inner
+ * hairline was removed - the macOS frame owns the single inner contour now -
+ * so this is always false. Kept for the geometry pass callers. */
 bool
 client_crop_innerline_active(Client *c)
 {
-	return c->border_inner_enabled && c->border_inner_width > 0
-		&& !c->fullscreen && c->crop.innerline && c->crop.innerline_buf;
+	(void)c;
+	return false;
 }
 
-/* macOS-style inner hairline: a thin line drawn around the whole window,
- * hugging the union contour of content and titlebars (the visible rounded
- * shape formed by the crop). Pure decoration - it changes no geometry and
- * captures no input. Its on/off, width and color come from the theme
- * (beautiful.border_inner_*) or the per-client override (c->border_inner_*);
- * the alpha is used as-is, no focus-based dimming. Re-renders automatically:
- * values are checked against the render cache each geometry pass, so property
- * updates and focus-independent changes are picked up on the next refresh. */
+/* The old inner hairline was removed; the macOS frame draws the single inner
+ * contour. Kept as a no-op that hides any node left over from a previous
+ * build or hot reload. */
 void
 client_crop_update_innerline(Client *c)
 {
-	int radii[4], cw, ch, bw;
-	float eff[4];
-	double lw;
-
-	if (!c->scene || !c->scene_surface || !c->border[0])
-		return;
-
-	lw = c->border_inner_width;
-	cw = c->geometry.width;
-	ch = c->geometry.height;
-	bw = c->bw;
-
-	if (!c->border_inner_enabled || lw <= 0.0 || cw <= 0 || ch <= 0
-			|| c->fullscreen) {
-		if (c->crop.innerline)
-			wlr_scene_node_set_enabled(&c->crop.innerline->node, false);
-		return;
-	}
-
-	if (c->border_inner_color.initialized)
-		color_to_floats(&c->border_inner_color, eff);
-	else {
-		const float *base = get_border_inner_color();
-		for (int i = 0; i < 4; i++)
-			eff[i] = base[i];
-	}
-
-	client_crop_radii(c, radii);
-
-	if (!c->crop.innerline) {
-		c->crop.innerline = wlr_scene_buffer_create(c->scene, NULL);
-		if (!c->crop.innerline)
-			return;
-		c->crop.innerline->node.data = c->scene->node.data;
-		c->crop.innerline->point_accepts_input = innerline_point_accepts_input;
-		wlr_scene_buffer_set_filter_mode(c->crop.innerline,
-			WLR_SCALE_FILTER_BILINEAR);
-	}
-
-	if (!c->crop.innerline_buf
-			|| c->crop.innerline_w != cw || c->crop.innerline_h != ch
-			|| c->crop.innerline_bw != bw
-			|| c->crop.innerline_line != lw
-			|| memcmp(c->crop.innerline_radii, radii,
-				sizeof(c->crop.innerline_radii)) != 0
-			|| memcmp(c->crop.innerline_color, eff,
-				sizeof(c->crop.innerline_color)) != 0) {
-		struct wlr_buffer *buf = rounded_crop_render_innerline(cw, ch, bw,
-			radii, lw, eff);
-		if (!buf) {
-			if (c->crop.innerline)
-				wlr_scene_node_set_enabled(&c->crop.innerline->node, false);
-			return;
-		}
-		if (c->crop.innerline_buf)
-			wlr_buffer_drop(c->crop.innerline_buf);
-		c->crop.innerline_buf = buf;
-		c->crop.innerline_w = cw;
-		c->crop.innerline_h = ch;
-		c->crop.innerline_bw = bw;
-		c->crop.innerline_line = lw;
-		memcpy(c->crop.innerline_radii, radii,
-			sizeof(c->crop.innerline_radii));
-		memcpy(c->crop.innerline_color, eff, sizeof(c->crop.innerline_color));
-		wlr_scene_buffer_set_buffer(c->crop.innerline, buf);
-		wlr_scene_buffer_set_dest_size(c->crop.innerline, cw, ch);
-	}
-	/* Buffer covers the whole client geometry (the union of content and
-	 * titlebars); placed at (bw, bw) its single contour traces the visible
-	 * window shape, seamlessly crossing any titlebar seams. */
-	wlr_scene_node_set_position(&c->crop.innerline->node, bw, bw);
-	wlr_scene_node_raise_to_top(&c->crop.innerline->node);
-	if (c->rounded.tree)
-		wlr_scene_node_raise_to_top(&c->rounded.tree->node);
-	if (c->popups)
-		wlr_scene_node_raise_to_top(&c->popups->node);
-	wlr_scene_node_set_enabled(&c->crop.innerline->node, true);
+	if (c && c->crop.innerline)
+		wlr_scene_node_set_enabled(&c->crop.innerline->node, false);
 }
 
 /* Rounding configuration changed (per-client property or theme reload):
@@ -1789,4 +1710,8 @@ client_fade_apply(Client *c, float opacity)
 
 	/* Shadow follows through its own alpha or buffer opacity. */
 	shadow_set_fade(&c->shadow, opacity);
+
+	/* Native macOS frame: stroke/highlight buffer opacity + shadow alpha. */
+	client_macos_frame_set_fade(c, opacity);
 }
+
