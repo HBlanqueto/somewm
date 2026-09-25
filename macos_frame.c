@@ -2,10 +2,29 @@
  * macos_frame.c - built-in macOS Big Sur window frame (SceneFX)
  *
  * Draws the whole decorated window frame natively in C: the outer stroke, the
- * inner highlight and the two-layer drop shadow, plus the compositor-wide
+ * inner highlight and the single drop shadow, plus the compositor-wide
  * appearance mode (somewm.appearance) that drives them. The Lua config no
  * longer defines or re-applies a frame; everything is a compile-time constant
- * (macos_frame.h) except the three documented Lua knobs.
+ * (macos_frame.h) except the two documented mode knobs (somewm.appearance,
+ * c.frame_appearance).
+ *
+ * Geometry (macOS): with W = the window rect (titlebar + content, the area
+ * the client occupies) and R = 10 px corner radius, from outside to inside:
+ *
+ *   1. Shadow: one SceneFX shadow node behind everything, derived from W's
+ *      rounded shape (radius R), offset down, clipped to W so translucent
+ *      windows never let it bleed through.
+ *   2. Outer stroke: 1 px ring OUTSIDE W - outer edge = W grown by 1 px
+ *      (radius R+1), inner edge = W exactly (radius R). Below the client,
+ *      above the shadow. Dark: black 50 %. Light: black 20 %.
+ *   3. Content + titlebars clipped to W with radius R.
+ *   4. Inner highlight: 1 px ring INSIDE W, above the titlebar buffers and
+ *      client surface, below popups. Dark only: white 16 % sides/bottom,
+ *      white 22 % top, blended through the top corners.
+ *
+ * The frame nodes are children of c->scene, whose origin is the OUTER border
+ * corner of the window footprint; the geometry box W sits bw px inside it
+ * (titlebar_get_area), so every frame node is positioned relative to (bw,bw).
  *
  * Only active in a SceneFX build (-Dscenefx=enabled): without it the frame is
  * disabled and the old border/corner renderers keep working unchanged.
@@ -53,38 +72,6 @@ appearance_set(int dark)
 	return true;
 }
 
-/* ========== beautiful.macos_frame ========== */
-
-bool
-macos_frame_get_enabled(void)
-{
-	return globalconf.appearance.macos_frame_enabled;
-}
-
-void
-macos_frame_load_beautiful_defaults(lua_State *L)
-{
-	if (!L)
-		L = globalconf_get_lua_State();
-	globalconf.appearance.macos_frame_enabled = true;
-	if (!L)
-		return;
-
-	lua_getglobal(L, "require");
-	lua_pushstring(L, "beautiful");
-	if (lua_pcall(L, 1, 1, 0) != 0) {
-		lua_pop(L, 1);
-		return;
-	}
-	if (lua_istable(L, -1)) {
-		lua_getfield(L, -1, "macos_frame");
-		if (!lua_isnil(L, -1))
-			globalconf.appearance.macos_frame_enabled = lua_toboolean(L, -1);
-		lua_pop(L, 1);
-	}
-	lua_pop(L, 1);
-}
-
 /* ========== Per-window frame ========== */
 
 #ifdef HAVE_SCENEFX
@@ -102,9 +89,9 @@ macos_frame_unmanaged(client_t *c)
 }
 #endif
 
-/* The frame only decorates managed, decorated, non-fullscreen clients.
- * titlebars_enabled == false shows up here as "no titlebar scene buffer",
- * which is how the C side sees the Lua-side flag. */
+/* The frame only decorates managed, decorated, non-fullscreen,
+ * non-maximized clients. titlebars_enabled == false shows up here as "no
+ * titlebar scene buffer", which is how the C side sees the Lua-side flag. */
 bool
 client_macos_frame_active(client_t *c)
 {
@@ -115,16 +102,13 @@ client_macos_frame_active(client_t *c)
 
 	if (!c || !c->scene || !c->scene_surface)
 		return false;
-	if (!globalconf.appearance.macos_frame_enabled)
-		return false;
 	if (macos_frame_unmanaged(c))
 		return false;
 	if (c->fullscreen)
 		return false;
-	/* Maximized-to-workarea with the border stripped (focus_space): the
-	 * window owns the whole screen, so there is no frame. */
-	if ((c->maximized || c->maximized_horizontal || c->maximized_vertical)
-			&& c->bw == 0)
+	/* Maximized windows own the whole workarea: no frame (and none comes
+	 * back until the window is restored to a normal size). */
+	if (c->maximized || c->maximized_horizontal || c->maximized_vertical)
 		return false;
 	for (i = 0; i < CLIENT_TITLEBAR_COUNT; i++) {
 		/* A size-zero bar is hidden (titlebars_enabled == false, or the
@@ -188,7 +172,6 @@ macos_frame_apply_visibility(client_t *c)
 {
 	struct macos_frame_nodes *f = &c->macos_frame;
 	bool on = client_macos_frame_active(c) && f->shown;
-	int i;
 
 	if (f->stroke)
 		wlr_scene_node_set_enabled(&f->stroke->node, on);
@@ -197,53 +180,49 @@ macos_frame_apply_visibility(client_t *c)
 	if (f->shadow_tree)
 		wlr_scene_node_set_enabled(&f->shadow_tree->node, on);
 #ifdef HAVE_SCENEFX
-	for (i = 0; i < 2; i++) {
-		if (f->shadow[i])
-			wlr_scene_node_set_enabled(&f->shadow[i]->node, on);
-	}
-#else
-	(void)i;
+	if (f->shadow)
+		wlr_scene_node_set_enabled(&f->shadow->node, on);
 #endif
 }
 
 #ifdef HAVE_SCENEFX
-static const float shadow_focused_c1[4] = MACOS_FRAME_SHADOW_FOCUSED_COLOR_1;
-static const float shadow_focused_c2[4] = MACOS_FRAME_SHADOW_FOCUSED_COLOR_2;
-static const float shadow_unfocused_c1[4] = MACOS_FRAME_SHADOW_UNFOCUSED_COLOR_1;
-static const float shadow_unfocused_c2[4] = MACOS_FRAME_SHADOW_UNFOCUSED_COLOR_2;
+static const float shadow_focused_color[4] = MACOS_FRAME_SHADOW_FOCUSED_COLOR;
+static const float shadow_unfocused_color[4] = MACOS_FRAME_SHADOW_UNFOCUSED_COLOR;
 #endif
 
 #ifdef HAVE_SCENEFX
-/* Shadow parameters for the current focus/appearance state, mirroring
- * shadow_sfx_update_geometry()'s node-box derivation (the SceneFX shader
- * derives the shadow rect as the node box inset by blur_sigma). */
+/* Apply the single SceneFX shadow node for the current focus/appearance
+ * state.
+ *
+ * The node box is the shadow's render canvas: the SceneFX shader derives the
+ * opaque silhouette as the node box inset by blur_sigma on every side
+ * (box_shadow.frag draws the box from position+blur_sigma to
+ * position+size-blur_sigma). To make that silhouette land exactly on W (grown
+ * by `spread` and shifted down by `offset_y`), the node is sized
+ * W + 2*(spread+blur) and positioned at (bw - spread - blur,
+ * bw + offset_y - spread - blur) inside the scene.
+ *
+ * The clipped region is the window rect W in node-relative coordinates, cut
+ * out so the shadow never shows through a translucent window. */
 static void
-macos_frame_shadow_apply(client_t *c, bool focused, int dark)
+macos_frame_shadow_apply(client_t *c, bool focused, int dark,
+			 int spread, float blur, int offset_y)
 {
 	struct macos_frame_nodes *f = &c->macos_frame;
-	struct wlr_scene_shadow *sfx;
-	int offset_y, w, h;
+	struct wlr_scene_shadow *sfx = f->shadow;
+	float color[4];
+	int bw, w, h;
 	int corner, i;
-	float blur1, blur2;
-	float color1[4], color2[4];
-	int x, y;
+	int node_w, node_h, node_x, node_y;
 
-	if (focused) {
-		offset_y = MACOS_FRAME_SHADOW_FOCUSED_OFFSET_Y;
-		blur1 = MACOS_FRAME_SHADOW_FOCUSED_BLUR_1;
-		blur2 = MACOS_FRAME_SHADOW_FOCUSED_BLUR_2;
-		memcpy(color1, shadow_focused_c1, sizeof(color1));
-		memcpy(color2, shadow_focused_c2, sizeof(color2));
-	} else {
-		offset_y = MACOS_FRAME_SHADOW_UNFOCUSED_OFFSET_Y;
-		blur1 = MACOS_FRAME_SHADOW_UNFOCUSED_BLUR_1;
-		blur2 = MACOS_FRAME_SHADOW_UNFOCUSED_BLUR_2;
-		memcpy(color1, shadow_unfocused_c1, sizeof(color1));
-		memcpy(color2, shadow_unfocused_c2, sizeof(color2));
-	}
-	color1[3] *= f->shadow_fade;
-	color2[3] *= f->shadow_fade;
+	if (!sfx)
+		return;
 
+	memcpy(color, focused ? shadow_focused_color : shadow_unfocused_color,
+		sizeof(color));
+	color[3] *= f->shadow_fade;
+
+	bw = c->bw;
 	w = c->geometry.width;
 	h = c->geometry.height;
 
@@ -259,34 +238,31 @@ macos_frame_shadow_apply(client_t *c, bool focused, int dark)
 		}
 	}
 
-	/* Layer 1: the diffuse drop shadow. */
-	sfx = f->shadow[0];
-	if (sfx) {
-		wlr_scene_shadow_set_size(sfx, w + 2 * (int)blur1,
-			h + 2 * (int)blur1);
-		wlr_scene_shadow_set_corner_radius(sfx, corner);
-		wlr_scene_shadow_set_blur_sigma(sfx, blur1);
-		wlr_scene_shadow_set_color(sfx, color1);
-		x = -blur1;
-		y = offset_y - blur1;
-		wlr_scene_node_set_position(&sfx->node, x, y);
-	}
+	node_w = w + 2 * (spread + (int)blur);
+	node_h = h + 2 * (spread + (int)blur);
+	node_x = bw - spread - (int)blur;
+	node_y = bw + offset_y - spread - (int)blur;
 
-	/* Layer 2: the tight contact shadow. */
-	sfx = f->shadow[1];
-	if (sfx) {
-		wlr_scene_shadow_set_size(sfx, w + 2 * (int)blur2,
-			h + 2 * (int)blur2);
-		wlr_scene_shadow_set_corner_radius(sfx, corner);
-		wlr_scene_shadow_set_blur_sigma(sfx, blur2);
-		wlr_scene_shadow_set_color(sfx, color2);
-		x = -blur2;
-		y = -blur2;
-		wlr_scene_node_set_position(&sfx->node, x, y);
-	}
+	wlr_scene_shadow_set_size(sfx, node_w, node_h);
+	wlr_scene_shadow_set_corner_radius(sfx, corner);
+	wlr_scene_shadow_set_blur_sigma(sfx, blur);
+	wlr_scene_shadow_set_color(sfx, color);
+	/* Clip the shadow out under the window: node-relative rect of W. */
+	wlr_scene_shadow_set_clipped_region(sfx, (struct clipped_region){
+		.area = (struct wlr_box){
+			.x = spread + (int)blur,
+			.y = spread + (int)blur - offset_y,
+			.width = w,
+			.height = h,
+		},
+		.corners = corner_radii_all(corner),
+	});
+	wlr_scene_node_set_position(&sfx->node, node_x, node_y);
 
 	f->shadow_focused = focused;
 	f->shadow_cache_dark = dark;
+	f->shadow_spread = spread;
+	f->shadow_blur = blur;
 }
 #endif /* HAVE_SCENEFX */
 
@@ -317,11 +293,15 @@ client_macos_frame_set_fade(client_t *c, float opacity)
 		wlr_scene_buffer_set_opacity(f->stroke, opacity);
 	if (f->highlight)
 		wlr_scene_buffer_set_opacity(f->highlight, opacity);
-	if (f->shadow[0]) {
+	if (f->shadow && f->shadow_cache_dark >= 0) {
 		focused = f->shadow_focused;
 		dark = f->shadow_cache_dark;
 #ifdef HAVE_SCENEFX
-		macos_frame_shadow_apply(c, focused, dark);
+		int spread = f->shadow_spread;
+		float blur = f->shadow_blur;
+		int offset_y = focused ? MACOS_FRAME_SHADOW_FOCUSED_OFFSET_Y
+			: MACOS_FRAME_SHADOW_UNFOCUSED_OFFSET_Y;
+		macos_frame_shadow_apply(c, focused, dark, spread, blur, offset_y);
 #else
 		(void)focused;
 		(void)dark;
@@ -333,7 +313,7 @@ void
 client_macos_frame_update(client_t *c)
 {
 	struct macos_frame_nodes *f;
-	int dark, frame_w, frame_h;
+	int dark, bw, frame_w, frame_h;
 	int radii[4];
 	int stroke_radii[4];
 	const float stroke_dark[4] = MACOS_FRAME_STROKE_COLOR_DARK;
@@ -351,6 +331,7 @@ client_macos_frame_update(client_t *c)
 	}
 
 	dark = client_macos_frame_appearance(c);
+	bw = c->bw;
 	frame_w = c->geometry.width;
 	frame_h = c->geometry.height;
 	client_macos_frame_radii(c, radii);
@@ -358,8 +339,8 @@ client_macos_frame_update(client_t *c)
 		stroke_radii[i] = radii[i] + MACOS_FRAME_STROKE_WIDTH;
 
 	/* Outer stroke: 1 px ring just OUTSIDE the window edge, rendered into a
-	 * buffer two pixels larger and shifted up-left so the stroke hugs the
-	 * window's rounded rect (inner radius 10, outer radius 11). */
+	 * buffer two pixels larger, positioned at (bw-1,bw-1) so the ring hugs
+	 * W's rounded rect (outer radius R+1, inner radius R = W's edge). */
 	if (!f->stroke) {
 		f->stroke = wlr_scene_buffer_create(c->scene, NULL);
 		if (!f->stroke)
@@ -393,10 +374,11 @@ client_macos_frame_update(client_t *c)
 		if (f->shadow_fade < 1.0f)
 			wlr_scene_buffer_set_opacity(f->stroke, f->shadow_fade);
 	}
-	wlr_scene_node_set_position(&f->stroke->node, -1, -1);
+	wlr_scene_node_set_position(&f->stroke->node, bw - 1, bw - 1);
 
-	/* Inner highlight: dark only. In light appearance there is no node at
-	 * all, so switching dark -> light destroys it (and its buffer). */
+	/* Inner highlight: dark only, 1 px ring INSIDE W, above content and
+	 * titlebars. In light appearance there is no node at all, so switching
+	 * dark -> light destroys it (and its buffer). */
 	if (!dark) {
 		if (f->highlight) {
 			if (f->highlight_buf) {
@@ -436,7 +418,7 @@ client_macos_frame_update(client_t *c)
 				wlr_scene_buffer_set_opacity(f->highlight,
 					f->shadow_fade);
 		}
-		wlr_scene_node_set_position(&f->highlight->node, 0, 0);
+		wlr_scene_node_set_position(&f->highlight->node, bw, bw);
 		/* Above content and titlebars; popups must stay on top. */
 		wlr_scene_node_raise_to_top(&f->highlight->node);
 		if (c->popups)
@@ -444,15 +426,13 @@ client_macos_frame_update(client_t *c)
 	}
 
 	#ifdef HAVE_SCENEFX
-	/* Shadows: two SceneFX layers, re-parameterized on focus/appearance. */
+	/* Shadow: one SceneFX layer, re-parameterized on focus/appearance. */
 	if (!f->shadow_tree) {
 		f->shadow_tree = wlr_scene_tree_create(c->scene);
 		if (!f->shadow_tree)
 			return;
 		wlr_scene_node_lower_to_bottom(&f->shadow_tree->node);
-		f->shadow[0] = wlr_scene_shadow_create(f->shadow_tree,
-			1, 1, 0, 0, (float[4]){ 0.0f, 0.0f, 0.0f, 0.0f });
-		f->shadow[1] = wlr_scene_shadow_create(f->shadow_tree,
+		f->shadow = wlr_scene_shadow_create(f->shadow_tree,
 			1, 1, 0, 0, (float[4]){ 0.0f, 0.0f, 0.0f, 0.0f });
 		f->shadow_cache_dark = -1;
 		f->shadow_fade = 1.0f;
@@ -460,15 +440,21 @@ client_macos_frame_update(client_t *c)
 	}
 
 	bool focused = globalconf.focus.client == c;
-	if (f->shadow[0] && f->shadow[1]
+	if (f->shadow
 			&& (f->shadow_focused != focused
 				|| f->shadow_cache_dark != dark
 				|| f->shadow_w != frame_w || f->shadow_h != frame_h
 				|| f->shadow_corner != radii[ROUNDED_TL])) {
+		int offset_y = focused ? MACOS_FRAME_SHADOW_FOCUSED_OFFSET_Y
+			: MACOS_FRAME_SHADOW_UNFOCUSED_OFFSET_Y;
+		int spread = focused ? MACOS_FRAME_SHADOW_FOCUSED_SPREAD
+			: MACOS_FRAME_SHADOW_UNFOCUSED_SPREAD;
+		float blur = focused ? MACOS_FRAME_SHADOW_FOCUSED_BLUR
+			: MACOS_FRAME_SHADOW_UNFOCUSED_BLUR;
 		f->shadow_w = frame_w;
 		f->shadow_h = frame_h;
 		f->shadow_corner = radii[ROUNDED_TL];
-		macos_frame_shadow_apply(c, focused, dark);
+		macos_frame_shadow_apply(c, focused, dark, spread, blur, offset_y);
 	}
 #endif
 
@@ -506,7 +492,6 @@ client_macos_frame_repaint(client_t *c)
 void
 macos_frame_reload_all(void)
 {
-	macos_frame_load_beautiful_defaults(globalconf_get_lua_State());
 	foreach(ci, globalconf.clients) {
 		Client *c = *ci;
 		if (c->scene && c->scene_surface)

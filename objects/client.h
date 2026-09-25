@@ -61,14 +61,15 @@ struct macos_frame_nodes {
 	int hl_w, hl_h;
 	int hl_radii[4];
 
-	/* Two SceneFX shadow layers (focus/unfocus sets are the same two nodes,
-	 * re-parameterized). */
+	/* Single SceneFX shadow layer (re-parameterized on focus/appearance). */
 	struct wlr_scene_tree *shadow_tree;
-	struct wlr_scene_shadow *shadow[2];
+	struct wlr_scene_shadow *shadow;
 	int shadow_w, shadow_h;
 	int shadow_corner;          /* cached frame corner radius */
 	bool shadow_focused;
 	int shadow_cache_dark;      /* -1 = cache empty */
+	int shadow_spread;          /* cached silhouette spread, px */
+	float shadow_blur;          /* cached SceneFX blur_sigma */
 	float shadow_fade;          /* window-opacity fade, 1.0 = full */
 
 	/* Cached resolution at the last update, so a no-op refresh is free. */

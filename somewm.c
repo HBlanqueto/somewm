@@ -7826,8 +7826,6 @@ setup(void)
 	/* Global appearance mode defaults to "dark" when nothing sets it (fresh
 	 * start, broken config, no Lua). somewm.appearance overrides it later. */
 	globalconf.appearance.appearance_dark = true;
-	/* Native macOS frame defaults on; beautiful.macos_frame disables it. */
-	globalconf.appearance.macos_frame_enabled = true;
 	globalconf.appearance.border_width = 1;
 	/* Inner hairline: macOS-style edge highlight, enabled via
 	 * beautiful.border_inner_enabled (clients) or

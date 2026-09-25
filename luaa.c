@@ -1543,10 +1543,6 @@ luaA_awesome_corner_reload(lua_State *L)
 	/* Reload config from beautiful */
 	rounded_load_beautiful_defaults(L);
 
-	/* The native macOS frame switch also lives in beautiful; re-read it and
-	 * re-apply so a runtime beautiful.macos_frame toggle takes effect. */
-	macos_frame_load_beautiful_defaults(L);
-
 	/* Update all existing client corners (true crop: content, titlebars,
 	 * border ring) */
 	foreach(c, globalconf.clients)
@@ -5722,9 +5718,6 @@ luaA_loadrc(void)
 
 			/* Load rounded corner defaults from beautiful theme */
 			rounded_load_beautiful_defaults(globalconf_L);
-
-			/* Load the native macOS frame switch from beautiful theme */
-			macos_frame_load_beautiful_defaults(globalconf_L);
 
 			loaded = 1;
 			break;

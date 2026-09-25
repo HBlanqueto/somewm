@@ -1116,48 +1116,36 @@ shadow_load_beautiful_defaults(lua_State *L)
     globalconf.shadow.client = shadow_defaults;
     globalconf.shadow.drawin = shadow_defaults;
 
-    shadow_config_t *client = &globalconf.shadow.client;
+    /* Client window shadows are owned by the native macOS frame now (or are
+     * off for undecorated clients); the theme keys are ignored. Warn once so
+     * a stale theme that still sets them is not silently dropped. */
+    {
+        static bool client_keys_deprecated_warned;
+        static const char *const keys[] = {
+            "shadow_enabled", "shadow_radius", "shadow_offset_x",
+            "shadow_offset_y", "shadow_spread", "shadow_corner_radius",
+            "shadow_follow_corners", "shadow_opacity", "shadow_clip",
+            "shadow_color",
+        };
+        bool any = false;
+        size_t i;
 
-    /* Client shadow defaults */
-    lua_getfield(L, -1, "shadow_enabled");
-    if (!lua_isnil(L, -1))
-        client->enabled = lua_toboolean(L, -1);
-    lua_pop(L, 1);
-
-    shadow_beautiful_int(L, "shadow_radius", &client->radius);
-    shadow_beautiful_int(L, "shadow_offset_x", &client->offset_x);
-    shadow_beautiful_int(L, "shadow_offset_y", &client->offset_y);
-    shadow_beautiful_int(L, "shadow_spread", &client->spread);
-    shadow_beautiful_radius(L, "shadow_corner_radius", client->radii);
-    client->corner_radius = client->radii[SHADOW_CORNER_TL];
-
-    lua_getfield(L, -1, "shadow_follow_corners");
-    if (!lua_isnil(L, -1))
-        client->follow_corners = lua_toboolean(L, -1);
-    lua_pop(L, 1);
-
-    lua_getfield(L, -1, "shadow_opacity");
-    if (lua_isnumber(L, -1))
-        client->opacity = (float)lua_tonumber(L, -1);
-    lua_pop(L, 1);
-
-    lua_getfield(L, -1, "shadow_clip");
-    if (!lua_isnil(L, -1)) {
-        if (lua_isboolean(L, -1)) {
-            client->clip_directional = lua_toboolean(L, -1);
-        } else if (lua_isstring(L, -1)) {
-            const char *clip = lua_tostring(L, -1);
-            if (clip)
-                client->clip_directional =
-                    (strcmp(clip, "directional") == 0);
+        for (i = 0; i < sizeof(keys) / sizeof(keys[0]); i++) {
+            lua_getfield(L, -1, keys[i]);
+            any = any || !lua_isnil(L, -1);
+            lua_pop(L, 1);
+            if (any)
+                break;
+        }
+        if (any && !client_keys_deprecated_warned) {
+            client_keys_deprecated_warned = true;
+            warn("beautiful.shadow_* keys are deprecated: the native macOS "
+                "frame owns client shadows now; ignored");
         }
     }
-    lua_pop(L, 1);
-
-    shadow_beautiful_color(L, "shadow_color", client->color);
 
     /* Copy client defaults to drawin, then apply drawin-specific overrides */
-    globalconf.shadow.drawin = *client;
+    globalconf.shadow.drawin = globalconf.shadow.client;
     shadow_config_t *drawin = &globalconf.shadow.drawin;
 
     lua_getfield(L, -1, "shadow_drawin_enabled");
