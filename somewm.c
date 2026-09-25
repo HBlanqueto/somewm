@@ -128,6 +128,7 @@
 #include "property.h"         /* Property system for Wayland and XWayland */
 #include "shadow.h"          /* Compositor-level shadow support */
 #include "blur.h"            /* Compositor-level backdrop blur support */
+#include "macos_frame.h"     /* Native macOS window frame */
 #include "ipc.h"
 #include "dbus.h"
 
@@ -4032,6 +4033,9 @@ client_scene_node_destroy(Client* c) {
 	/* The blur node is a child of c->scene; release it first so it is not
 	 * double-destroyed with the tree. */
 	blur_release(&c->blur);
+	/* Same for the native macOS frame buffers; the frame scene nodes die
+	 * with the tree. */
+	client_macos_frame_release(c);
 	/* c->popups and c->scene_surface are both descendants of c->scene,
 	 * destroyed recursively along with it. */
 	wlr_scene_node_destroy(&c->scene->node);
@@ -6480,9 +6484,12 @@ apply_geometry_to_wlroots(Client *c)
 	struct wlr_box clip;
 	int titlebar_left, titlebar_top;
 	int frame_w, frame_h;
+	bool macos_frame;
 
 	if (!c->scene || !client_surface(c) || !client_surface(c)->mapped)
 		return;
+
+	macos_frame = client_macos_frame_active(c);
 
 	/* Failsafe: only a maximized, non-fullscreen client may carry the
 	 * focus-mode offset. Anything else drops it here, so a missed Lua reset
@@ -6527,8 +6534,10 @@ apply_geometry_to_wlroots(Client *c)
 
 	/* Update shadow geometry (lazy creation if needed). The shadow follows
 	 * the client's effective rounded-corner radii so its contour matches the
-	 * window's, per corner. */
-	{
+	 * window's, per corner. The native macOS frame owns its own two-layer
+	 * SceneFX shadows, so the theme/config shadow is suppressed while the
+	 * frame is active. */
+	if (!macos_frame) {
 		const shadow_config_t *shadow_config = shadow_get_effective_config(
 			c->shadow_config, false);
 		if (shadow_config && shadow_config->enabled) {
@@ -6540,6 +6549,8 @@ apply_geometry_to_wlroots(Client *c)
 			shadow_update(&c->shadow, c->scene, &eff, frame_w, frame_h);
 		}
 	}
+	if (macos_frame && c->shadow.tree)
+		wlr_scene_node_set_enabled(&c->shadow.tree->node, false);
 
 	/* The shadow tree is created lazily just above, so re-run the offset
 	 * helper to suppress it when the reveal offset is already active. */
@@ -6548,18 +6559,39 @@ apply_geometry_to_wlroots(Client *c)
 	/* Rounded corners: swap the square border rects for a rounded ring
 	 * (content and titlebars are cropped per-pixel, see client_crop_*).
 	 * Fullscreen disables rounding so no app pixels are cut. With SceneFX
-	 * this becomes a shader frame rect + clipped_region hole instead. */
+	 * this becomes a shader frame rect + clipped_region hole instead. The
+	 * native macOS frame replaces this ring (and the inner hairline below)
+	 * entirely while it is active. */
+	if (!macos_frame) {
 #ifdef HAVE_SCENEFX
-	client_scenefx_update_border(c, frame_w, frame_h);
+		client_scenefx_update_border(c, frame_w, frame_h);
 #else
-	client_crop_update_ring(c, frame_w, frame_h);
+		client_crop_update_ring(c, frame_w, frame_h);
 #endif
+	} else {
+		/* The frame's stroke is the border now: hide the old ring/frame rect
+		 * and collapse the four plain border rects to nothing. */
+#ifdef HAVE_SCENEFX
+		if (c->border_frame)
+			wlr_scene_node_set_enabled(&c->border_frame->node, false);
+#else
+		if (c->crop.ring)
+			wlr_scene_node_set_enabled(&c->crop.ring->node, false);
+#endif
+		for (int i = 0; i < 4; i++)
+			wlr_scene_rect_set_size(c->border[i], 0, 0);
+	}
 
-	/* Inner hairline (macOS-style light line inside the border). */
+	/* Inner hairline (removed; the frame owns the inner contour). */
 	client_crop_update_innerline(c);
 
 	/* Update titlebar positions - they depend on current geometry */
 	client_update_titlebar_positions(c);
+
+	/* Native macOS frame: outer stroke, inner highlight and shadows. Runs
+	 * after the titlebars are positioned so the highlight always sits above
+	 * them. */
+	client_macos_frame_update(c);
 
 	/* Request size change from client (subtract borders AND titlebars from geometry)
 	 * CRITICAL: Only send configure if there's no pending resize waiting for client commit.
@@ -6632,6 +6664,7 @@ apply_geometry_to_wlroots(Client *c)
 				wlr_scene_node_set_enabled(&c->crop.innerline->node, true);
 			if (c->shadow.tree)
 				wlr_scene_node_set_enabled(&c->shadow.tree->node, true);
+			client_macos_frame_set_shown(c, true);
 		} else {
 			/* Client extends past monitor. Clip the surface to the
 			 * visible rectangle; decorations only hide when fully
@@ -6665,6 +6698,7 @@ apply_geometry_to_wlroots(Client *c)
 					partially_visible);
 			if (c->shadow.tree)
 				wlr_scene_node_set_enabled(&c->shadow.tree->node, partially_visible);
+			client_macos_frame_set_shown(c, partially_visible);
 
 			/* Titlebar buffers: client_update_titlebar_positions()
 			 * already enables them based on size/fullscreen. Only
@@ -6694,6 +6728,7 @@ apply_geometry_to_wlroots(Client *c)
 			wlr_scene_node_set_enabled(&c->crop.innerline->node, true);
 		if (c->shadow.tree)
 			wlr_scene_node_set_enabled(&c->shadow.tree->node, true);
+		client_macos_frame_set_shown(c, true);
 	}
 
 	wlr_scene_subsurface_tree_set_clip(&c->scene_surface->node, &clip);
@@ -7788,6 +7823,11 @@ setup(void)
 	 */
 
 	/* Appearance defaults (from config.h) */
+	/* Global appearance mode defaults to "dark" when nothing sets it (fresh
+	 * start, broken config, no Lua). somewm.appearance overrides it later. */
+	globalconf.appearance.appearance_dark = true;
+	/* Native macOS frame defaults on; beautiful.macos_frame disables it. */
+	globalconf.appearance.macos_frame_enabled = true;
 	globalconf.appearance.border_width = 1;
 	/* Inner hairline: macOS-style edge highlight, enabled via
 	 * beautiful.border_inner_enabled (clients) or

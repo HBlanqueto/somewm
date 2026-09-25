@@ -683,79 +683,117 @@ rounded_crop_render_ring(int frame_w, int frame_h, int bw, const int radii[4],
     return wlr_buf;
 }
 
-struct wlr_buffer *
-rounded_crop_render_innerline(int content_w, int content_h, int bw,
-                              const int radii[4], double line_w,
-                              const float color[4])
+/* Fill a rounded ring (outer rect minus inner rect inset by `bw`), even-odd.
+ * Shared by the macOS frame's stroke/highlight renderers. */
+static void
+rounded_cairo_ring_fill(cairo_t *cr, double x, double y, double w, double h,
+                        double bw, const double outer[4], const double inner[4])
 {
-    double inner[4], center[4];
-    double cx, cy, cw, ch;
+	rounded_cairo_path_radii(cr, x, y, w, h, outer);
+	if (w > 2 * bw && h > 2 * bw)
+		rounded_cairo_path_radii(cr, x + bw, y + bw, w - 2 * bw,
+			h - 2 * bw, inner);
+	cairo_set_fill_rule(cr, CAIRO_FILL_RULE_EVEN_ODD);
+	cairo_fill(cr);
+}
 
-    if (content_w <= 0 || content_h <= 0 || line_w <= 0
-            || !radii || !color)
-        return NULL;
-    if (line_w >= content_w || line_w >= content_h)
-        return NULL;
+/* Render the macOS inner highlight: a 1 px ring INSIDE the window edge that
+ * follows the corner radii, drawn above content and titlebars. The top edge
+ * is slightly brighter and blends down to the side alpha across the top
+ * band, so the corner arcs fade smoothly with no visible seam. DARK MODE
+ * ONLY (the caller creates no node in light appearance).
+ *
+ * `side` and `top` are the RGBA of the sides/bottom and of the top edge. */
+struct wlr_buffer *
+rounded_crop_render_macos_highlight(int content_w, int content_h,
+				    const int radii[4], double line_w,
+				    const float side[4], const float top[4])
+{
+	double outer[4], inner[4];
+	int i;
 
-    /* The ring's inner contour: radii inset by the border width, clamped the
-     * same way rounded_crop_render_ring() clamps them. This is the contour
-     * the hairline must hug so both share the exact same arcs. */
-    for (int i = 0; i < 4; i++) {
-        double r = radii[i] < 0 ? 0.0 : (double)radii[i];
-        r = r - bw;
-        if (r < 0.0)
-            r = 0.0;
-        inner[i] = r;
-    }
-    {
-        int r[4];
-        for (int i = 0; i < 4; i++)
-            r[i] = (int)inner[i];
-        rounded_clamp_corner_radii(r, content_w, content_h);
-        for (int i = 0; i < 4; i++)
-            inner[i] = r[i];
-    }
+	if (content_w <= 0 || content_h <= 0 || line_w <= 0
+			|| !radii || !side || !top)
+		return NULL;
+	if (line_w >= content_w || line_w >= content_h)
+		return NULL;
 
-    /* Centerline radius: the stroke's outer edge then lies exactly on the
-     * ring's inner contour (outer-edge radius = centerline + line_w/2). */
-    for (int i = 0; i < 4; i++) {
-        center[i] = inner[i] - line_w / 2.0;
-        if (center[i] < 0.0)
-            center[i] = 0.0;
-    }
+	for (i = 0; i < 4; i++)
+		outer[i] = radii[i] < 0 ? 0.0 : (double)radii[i];
+	{
+		int r[4];
+		for (i = 0; i < 4; i++)
+			r[i] = (int)outer[i];
+		rounded_clamp_corner_radii(r, content_w, content_h);
+		for (i = 0; i < 4; i++)
+			outer[i] = r[i];
+	}
+	for (i = 0; i < 4; i++) {
+		inner[i] = outer[i] - line_w;
+		if (inner[i] < 0.0)
+			inner[i] = 0.0;
+	}
+	{
+		int r[4];
+		for (i = 0; i < 4; i++)
+			r[i] = (int)inner[i];
+		rounded_clamp_corner_radii(r,
+			content_w - 2 * (int)line_w, content_h - 2 * (int)line_w);
+		for (i = 0; i < 4; i++)
+			inner[i] = r[i];
+	}
 
-    cx = line_w / 2.0;
-    cy = line_w / 2.0;
-    cw = content_w - line_w;
-    ch = content_h - line_w;
+	cairo_surface_t *surface = cairo_image_surface_create(
+		CAIRO_FORMAT_ARGB32, content_w, content_h);
+	if (cairo_surface_status(surface) != CAIRO_STATUS_SUCCESS) {
+		cairo_surface_destroy(surface);
+		return NULL;
+	}
 
-    cairo_surface_t *surface = cairo_image_surface_create(
-        CAIRO_FORMAT_ARGB32, content_w, content_h);
-    if (cairo_surface_status(surface) != CAIRO_STATUS_SUCCESS) {
-        cairo_surface_destroy(surface);
-        return NULL;
-    }
+	cairo_t *cr = cairo_create(surface);
 
-    cairo_t *cr = cairo_create(surface);
-    cairo_set_source_rgba(cr, color[0], color[1], color[2], color[3]);
-    cairo_set_line_width(cr, line_w);
-    cairo_set_line_join(cr, CAIRO_LINE_JOIN_ROUND);
-    rounded_cairo_path_radii(cr, cx, cy, cw, ch, center);
-    cairo_stroke(cr);
-    cairo_destroy(cr);
-    cairo_surface_flush(surface);
+	/* Whole ring at the side alpha first. */
+	cairo_set_source_rgba(cr, side[0], side[1], side[2], side[3]);
+	rounded_cairo_ring_fill(cr, 0, 0, content_w, content_h, line_w,
+		outer, inner);
 
-    struct wlr_buffer *wlr_buf = rounded_buffer_create(content_w, content_h);
-    if (wlr_buf) {
-        struct rounded_buffer *buffer = wl_container_of(wlr_buf, buffer, base);
-        const unsigned char *src = cairo_image_surface_get_data(surface);
-        int src_stride = cairo_image_surface_get_stride(surface);
-        for (int y = 0; y < content_h; y++)
-            memcpy((uint8_t *)buffer->data + (size_t)y * buffer->stride,
-                   src + (size_t)y * src_stride, (size_t)content_w * 4);
-    }
-    cairo_surface_destroy(surface);
-    return wlr_buf;
+	/* Top band (ring pixels with y <= line_w): erase, then repaint with a
+	 * vertical gradient from the brighter top edge down to the side alpha,
+	 * so the top corners blend smoothly into the sides. */
+	cairo_save(cr);
+	cairo_rectangle(cr, 0, 0, content_w, line_w);
+	cairo_clip(cr);
+
+	cairo_set_operator(cr, CAIRO_OPERATOR_CLEAR);
+	rounded_cairo_ring_fill(cr, 0, 0, content_w, content_h, line_w,
+		outer, inner);
+
+	cairo_set_operator(cr, CAIRO_OPERATOR_OVER);
+	cairo_pattern_t *pat = cairo_pattern_create_linear(0, 0, 0, line_w);
+	cairo_pattern_add_color_stop_rgba(pat, 0.0, top[0], top[1], top[2],
+		top[3]);
+	cairo_pattern_add_color_stop_rgba(pat, 1.0, side[0], side[1], side[2],
+		side[3]);
+	cairo_set_source(cr, pat);
+	rounded_cairo_ring_fill(cr, 0, 0, content_w, content_h, line_w,
+		outer, inner);
+	cairo_pattern_destroy(pat);
+	cairo_restore(cr);
+
+	cairo_destroy(cr);
+	cairo_surface_flush(surface);
+
+	struct wlr_buffer *wlr_buf = rounded_buffer_create(content_w, content_h);
+	if (wlr_buf) {
+		struct rounded_buffer *buffer = wl_container_of(wlr_buf, buffer, base);
+		const unsigned char *src = cairo_image_surface_get_data(surface);
+		int src_stride = cairo_image_surface_get_stride(surface);
+		for (int y = 0; y < content_h; y++)
+			memcpy((uint8_t *)buffer->data + (size_t)y * buffer->stride,
+			       src + (size_t)y * src_stride, (size_t)content_w * 4);
+	}
+	cairo_surface_destroy(surface);
+	return wlr_buf;
 }
 
 void
@@ -1015,15 +1053,24 @@ rounded_load_beautiful_defaults(lua_State *L)
 
     rounded_config_t *client = &globalconf.rounded.client;
 
-    /* Client rounded corner defaults */
-    lua_getfield(L, -1, "corner_enabled");
-    if (!lua_isnil(L, -1))
-        client->enabled = lua_toboolean(L, -1);
-    lua_pop(L, 1);
-
-    rounded_beautiful_radius(L, "corner_radius", client->radii);
-    client->radius = client->radii[ROUNDED_TL];
-    rounded_beautiful_color(L, "corner_color", client->color);
+    /* Client rounded corner defaults. The native macOS frame owns the corner
+     * radius for decorated clients now, so the beautiful.corner_enabled /
+     * corner_radius / corner_color theme knobs are deprecated and ignored
+     * (warn once). Drawin corners (corner_drawin_*) are separate and stay. */
+    {
+        static bool corner_deprecated_warned;
+        lua_getfield(L, -1, "corner_enabled");
+        bool has_enabled = !lua_isnil(L, -1);
+        lua_pop(L, 1);
+        lua_getfield(L, -1, "corner_radius");
+        bool has_radius = !lua_isnil(L, -1);
+        lua_pop(L, 1);
+        if ((has_enabled || has_radius) && !corner_deprecated_warned) {
+            corner_deprecated_warned = true;
+            warn("beautiful.corner_enabled/corner_radius are deprecated: "
+                "the native macOS frame owns the corner radius now; ignored");
+        }
+    }
 
     /* Copy client defaults to drawin, then apply drawin-specific overrides */
     globalconf.rounded.drawin = *client;

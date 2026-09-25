@@ -296,18 +296,15 @@ struct wlr_buffer *rounded_crop_render_ring(int frame_w, int frame_h, int bw,
                                             const float color[4]);
 
 /**
- * Render an inner hairline: a `content_w` x `content_h` ARGB buffer with a
- * thin stroke following the ring's inner contour (the border's inner edge).
- *
- * The stroke is centered `line_w`/2 inside the buffer edges and its leading
- * (outer) edge coincides exactly with the ring's inner rounded rect, so the
- * two contours share the same per-corner arcs (no aliasing gap). Corner
- * radii are the ring's inner radii (`max(0, radii[i] - bw)`), clamped the
- * same way the ring clamps them. Returns NULL on failure or when the line
- * does not fit the buffer.
+ * Render the macOS inner highlight: a `content_w` x `content_h` ARGB buffer
+ * with a thin ring INSIDE the window edge that follows the corner `radii`.
+ * The top edge is brighter (`top`) and blends down to `side` across the top
+ * band, so the corner arcs fade smoothly. DARK MODE ONLY. Returns NULL on
+ * failure or when the ring does not fit the buffer.
  */
-struct wlr_buffer *rounded_crop_render_innerline(int content_w, int content_h,
-        int bw, const int radii[4], double line_w, const float color[4]);
+struct wlr_buffer *rounded_crop_render_macos_highlight(int content_w,
+	int content_h, const int radii[4], double line_w,
+	const float side[4], const float top[4]);
 
 /** Free owned buffers and reset the crop state (the ring scene node is
  * expected to be destroyed with its parent tree). */

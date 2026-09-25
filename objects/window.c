@@ -340,6 +340,21 @@ luaA_window_get_border_inner_width(lua_State *L, window_t *window)
     return 1;
 }
 
+/* The compositor-drawn inner hairline was replaced by the native macOS frame
+ * (macos_frame.h). The border_inner_* properties are accepted for Lua
+ * compatibility but ignored; warn once per process. */
+static bool border_inner_deprecated_warned;
+
+static void
+border_inner_deprecated(void)
+{
+	if (border_inner_deprecated_warned)
+		return;
+	border_inner_deprecated_warned = true;
+	warn("border_inner_* is deprecated: the native macOS frame owns the "
+		"inner contour now; the value is ignored");
+}
+
 /** Set inner hairline width property (Lua property setter).
  * \param L The Lua VM state.
  * \param window The window object.
@@ -348,16 +363,17 @@ luaA_window_get_border_inner_width(lua_State *L, window_t *window)
 static int
 luaA_window_set_border_inner_width(lua_State *L, window_t *window)
 {
-    (void)window;
-    int width = round(luaA_checknumber_range(L, -1, 0, MAX_X11_SIZE));
+	(void)window;
+	int width = round(luaA_checknumber_range(L, -1, 0, MAX_X11_SIZE));
 
-    if(width == window->border_inner_width)
-        return 0;
+	border_inner_deprecated();
+	if (width == window->border_inner_width)
+		return 0;
 
-    window->border_need_update = true;
-    window->border_inner_width = width;
-    luaA_object_emit_signal(L, -3, "property::border_inner_width", 0);
-    return 0;
+	window->border_need_update = true;
+	window->border_inner_width = width;
+	luaA_object_emit_signal(L, -3, "property::border_inner_width", 0);
+	return 0;
 }
 
 /** Get inner hairline color property.
@@ -384,17 +400,18 @@ luaA_window_get_border_inner_color(lua_State *L, window_t *window)
 static int
 luaA_window_set_border_inner_color(lua_State *L, window_t *window)
 {
-    const char *color_name = luaL_checkstring(L, -1);
-    color_t new_color;
+	const char *color_name = luaL_checkstring(L, -1);
+	color_t new_color;
 
-    if(color_name && color_init_from_string(&new_color, color_name))
-    {
-        window->border_inner_color = new_color;
-        window->border_need_update = true;
-        luaA_object_emit_signal(L, -3, "property::border_inner_color", 0);
-    }
+	border_inner_deprecated();
+	if(color_name && color_init_from_string(&new_color, color_name))
+	{
+		window->border_inner_color = new_color;
+		window->border_need_update = true;
+		luaA_object_emit_signal(L, -3, "property::border_inner_color", 0);
+	}
 
-    return 0;
+	return 0;
 }
 
 /** Get inner hairline on/off property.
@@ -417,15 +434,16 @@ luaA_window_get_border_inner_enabled(lua_State *L, window_t *window)
 static int
 luaA_window_set_border_inner_enabled(lua_State *L, window_t *window)
 {
-    bool enabled = luaA_checkboolean(L, -1);
+	bool enabled = luaA_checkboolean(L, -1);
 
-    if(enabled == window->border_inner_enabled)
-        return 0;
+	border_inner_deprecated();
+	if(enabled == window->border_inner_enabled)
+		return 0;
 
-    window->border_need_update = true;
-    window->border_inner_enabled = enabled;
-    luaA_object_emit_signal(L, -3, "property::border_inner_enabled", 0);
-    return 0;
+	window->border_need_update = true;
+	window->border_inner_enabled = enabled;
+	luaA_object_emit_signal(L, -3, "property::border_inner_enabled", 0);
+	return 0;
 }
 
 /** Get a window type (as string).

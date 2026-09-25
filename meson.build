@@ -478,6 +478,7 @@ somewm_sources = [
   'somewm_api.c',
   'ipc.c',
   'window.c',
+  'macos_frame.c',
   'rounded.c',
   'event_queue.c',
   'color.c',
