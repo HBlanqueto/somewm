@@ -3,25 +3,52 @@
 # WLR_RENDERER=gles2 (SceneFX fx_renderer), exits non-zero on the first failure.
 #
 # Scenarios:
+#   0. isolation: require() resolves inside the isolated config dir (P0.11)
 #   1. clean start: no Lua errors, renderer is GLES2+SceneFX
 #   2. slide with a COLOR wallpaper (tag 1 -> 2 -> 1)
 #   3. slide with an IMAGE wallpaper
 #   4. hot-reload x1, x2, x3, each followed by a slide
 #   5. focus space: enter, reveal on/off, exit, no errors
+#   (after all scenarios: live wallpaper-state mtime and both repos' git status
+#    must be identical to the pre-run snapshot)
 #
 # Frame capture uses grim (wlr-screencopy) against the nested instance's own
 # WAYLAND_DISPLAY, exactly like the fork's tests/test-*.lua do. Pixel analysis
 # uses ImageMagick (magick), already present in the Nix env.
 #
-# Run: tests/p0.3-gles2-smoke.sh [--keep]
-#   --keep  leave artifacts (default: only failures keep them)
+# Run: tests/p0.3-gles2-smoke.sh [--keep] [--config <ref|ruta>] [--shell <ref|ruta>]
+#   --keep          leave artifacts (default: only failures keep them)
+#   --config REF    nested config dir from a git worktree of ~/.config/somewm @ REF
+#   --config PATH   nested config dir symlinked to a dev worktree PATH (origin kept)
+#   --shell REF     same, for ~/.config/quickshell
+#   (default: detached worktree at each repo's main-branch HEAD)
+#
+# P0.11 isolation: every nested instance (and any shell it spawns) runs against
+# a throwaway copy of the personal config + quickshell under /tmp/p0.3/xdg/,
+# with XDG_CONFIG_HOME/XDG_STATE_HOME/XDG_CACHE_HOME pinned there and the live
+# settings.json copied in read-only when it is not versioned. After the suite
+# the harness asserts the live session is untouched (wallpaper-state mtime and
+# both repos' git status) and that require() resolves inside the isolated dir.
 
 set -u
 cd "$(dirname "$0")/.." || exit 1
 ROOT=$(pwd)
 ART=/tmp/p0.3
 KEEP=0
-[ "${1:-}" = "--keep" ] && KEEP=1
+CONFIG_ARG=
+SHELL_ARG=
+
+# Options (die is defined here so the parse loop can use it).
+die() { echo "FATAL: $*" >&2; exit 1; }
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --keep)   KEEP=1 ;;
+        --config) CONFIG_ARG=${2:-}; shift ;;
+        --shell)  SHELL_ARG=${2:-}; shift ;;
+        *) die "unknown option: $1" ;;
+    esac
+    shift
+done
 
 # Default runtime dir: the launching user's per-user runtime, not the agent's
 # inherited one, so instances never collide with the live session's sockets.
@@ -35,24 +62,137 @@ PATTERN=$ROOT/build-test/test-content-pattern-client
 
 GLOBAL_TIMEOUT=${P0_3_TIMEOUT:-300}
 mkdir -p "$ART"
-trap 'exit 130' INT
+
+# P0.11 isolated XDG paths (the wrapper below must know them, so they are
+# defined before it is written; the export comes in the isolation block).
+XDG_ROOT=$ART/xdg
+XDG_CONFIG=$XDG_ROOT/config
+XDG_STATE=$XDG_ROOT/state
+XDG_CACHE=$XDG_ROOT/cache
 
 # The orchestrator inherits WLR_RENDERER from the environment for --host wayland
 # (only headless forces pixman). It does not pass log-verbosity flags, so we
 # hand it a SOMEWM_BINARY wrapper that adds --verbose: wlr_log goes to INFO and
-# the log carries the fx_renderer GLES2 line this script asserts on.
+# the log carries the fx_renderer GLES2 line this script asserts on. The wrapper
+# also re-forces the isolated XDG dirs: the orchestrator overrides STATE/CACHE
+# with its own sandbox, and the nested shell must share the same throwaway dirs.
 export WLR_RENDERER=gles2
 GLES2_WRAPPER=$ART/gles2-wrapper.sh
 cat > "$GLES2_WRAPPER" <<EOF
 #!/bin/sh
+export XDG_CONFIG_HOME=$XDG_CONFIG
+export XDG_STATE_HOME=$XDG_STATE
+export XDG_CACHE_HOME=$XDG_CACHE
 exec "$SOMEWM" --verbose "\$@"
 EOF
 chmod +x "$GLES2_WRAPPER"
 export SOMEWM_BINARY="$GLES2_WRAPPER"
 
+# --- P0.11 isolated config environment -------------------------------------
+# The nested instance runs against a throwaway copy of the personal config +
+# quickshell under /tmp/p0.3/xdg/, never the live dirs. Passing the conffile
+# via -c pins get_configuration_dir() (and thus where settings.json lives) to
+# the isolated dir; the GLES2 wrapper re-forces XDG_STATE/CACHE because the
+# orchestrator otherwise sandboxes them.
+export XDG_CONFIG_HOME=$XDG_CONFIG
+export XDG_STATE_HOME=$XDG_STATE
+export XDG_CACHE_HOME=$XDG_CACHE
+CONFIG_CFG=$XDG_CONFIG/somewm
+SHELL_CFG=$XDG_CONFIG/quickshell
+CONFIG_REPO=$HOME/.config/somewm
+SHELL_REPO=$HOME/.config/quickshell
+mkdir -p "$XDG_CONFIG" "$XDG_STATE" "$XDG_CACHE"
+
+is_abs() { case "$1" in /*) return 0 ;; *) return 1 ;; esac; }
+
+# Place one repo's config at $dest: a git worktree for a ref (removed with
+# --force on exit), a symlink for an existing dev worktree path (origin kept),
+# or a detached worktree at the repo's main-branch HEAD when no arg is given.
+# Sets ISOLATION_KIND to "worktree" or "symlink".
+ISOLATION_KIND=
+setup_one() {
+    local dest=$1 repo=$2 arg=${3:-} ref
+    if [ -n "$arg" ] && is_abs "$arg"; then
+        ln -s "$arg" "$dest"
+        echo "isolated: $dest -> symlink $arg"
+        ISOLATION_KIND=symlink
+        return
+    fi
+    if [ -n "$arg" ]; then
+        ref=$arg
+    else
+        ref=$(git -C "$repo" symbolic-ref --short HEAD 2>/dev/null) || ref=HEAD
+    fi
+    if ! git -C "$repo" worktree add --detach "$dest" "$ref" >/dev/null 2>&1; then
+        die "cannot create worktree $dest @ $ref ($repo)"
+    fi
+    echo "isolated: $dest <- worktree $ref ($(git -C "$repo" rev-parse --short "$ref" 2>/dev/null || echo HEAD))"
+    ISOLATION_KIND=worktree
+}
+
+setup_one "$CONFIG_CFG" "$CONFIG_REPO" "$CONFIG_ARG"
+CFG_SETUP=$ISOLATION_KIND
+setup_one "$SHELL_CFG" "$SHELL_REPO" "$SHELL_ARG"
+SHELL_SETUP=$ISOLATION_KIND
+
+# settings.json is NOT versioned in the config repo: ship the live one into the
+# isolated config dir, read-only, so the nested config reads the real values.
+if git -C "$CONFIG_REPO" ls-files --error-unmatch settings.json >/dev/null 2>&1; then
+    echo "settings.json is versioned in $CONFIG_REPO; using the checked-in copy"
+else
+    if [ -f "$HOME/.config/somewm/settings.json" ]; then
+        install -m 0444 "$HOME/.config/somewm/settings.json" "$CONFIG_CFG/settings.json"
+        echo "isolated: copied live settings.json (read-only) -> $CONFIG_CFG/settings.json"
+    else
+        echo "isolated: no live settings.json to copy"
+    fi
+fi
+
+# Consumed by tests/p0.3/focus-rc.lua so S5 loads libs/focus_space from the
+# isolated config dir instead of the hardcoded live path.
+export SOMEWM_TEST_CONFIG_DIR=$CONFIG_CFG
+
+# Minimal rc.lua inside the isolated config dir: proves the fork prepends the
+# conffile's dir to package.path, so require() (e.g. libs/focus_space) resolves
+# to the throwaway copy and never the live ~/.config/somewm.
+ISOLATION_PROBE=$CONFIG_CFG/p0.3-probe.lua
+cat > "$ISOLATION_PROBE" <<'PROBE'
+-- P0.11 isolation probe: minimal config whose dir anchors package.path to the
+-- isolated config dir. No autostart, no wallpaper, no keybindings.
+local awful = require("awful")
+awesome.connect_signal("debug::error", function(err)
+    io.stderr:write("ERROR: " .. tostring(err) .. "\n")
+end)
+for s in screen do
+    awful.tag({ "1", "2" }, s, awful.layout.layouts[1])
+end
+PROBE
+
+# Tear down what this script created and stop any instance left running. The
+# live session is never touched. Runs on EXIT/INT/TERM of the main shell only
+# (scenario subshells reset their EXIT trap).
+cleanup() {
+    "$CLIENT" test stop --name iso >/dev/null 2>&1
+    for d in s1 s2 s3 s4 s5; do
+        [ -d "$(state_dir "$d")" ] && "$CLIENT" test stop --name "$d" >/dev/null 2>&1
+    done
+    rm -f "$ISOLATION_PROBE"
+    if [ "$CFG_SETUP" = symlink ]; then
+        [ -L "$CONFIG_CFG" ] && rm -f "$CONFIG_CFG"
+    else
+        [ -d "$CONFIG_CFG" ] && git -C "$CONFIG_REPO" worktree remove --force "$CONFIG_CFG" >/dev/null 2>&1
+    fi
+    if [ "$SHELL_SETUP" = symlink ]; then
+        [ -L "$SHELL_CFG" ] && rm -f "$SHELL_CFG"
+    else
+        [ -d "$SHELL_CFG" ] && git -C "$SHELL_REPO" worktree remove --force "$SHELL_CFG" >/dev/null 2>&1
+    fi
+}
+trap cleanup EXIT
+trap 'exit 130' INT TERM
+
 # --- helpers ----------------------------------------------------------------
 
-die() { echo "FATAL: $*" >&2; exit 1; }
 stage() { echo; echo "===== $* ====="; }
 
 state_dir() { echo "$XDG_RUNTIME_DIR/somewm-test/$1"; }
@@ -365,13 +505,56 @@ S5() {
     echo "  ok: S5"
 }
 
+# --- scenario 0: isolation probe --------------------------------------------
+# A minimal config inside the isolated dir proves the fork prepends the
+# conffile's dir to package.path, so libs.focus_space resolves to the throwaway
+# copy and never the live ~/.config/somewm.
+
+ISOLATION() {
+    stage "ISOLATION: require() anchors to the isolated config dir"
+    local name=iso resolved target resolved_real i
+    rm -rf "$(state_dir "$name")"
+    if ! "$CLIENT" test start --name "$name" --host wayland \
+            --config "$ISOLATION_PROBE" --force >/dev/null 2>&1; then
+        echo "  FAIL: isolation probe instance did not start"
+        return 1
+    fi
+    for i in $(seq 1 30); do [ -S "$(state_dir "$name")/ipc.sock" ] && break; sleep 0.5; done
+    sleep 1
+    resolved=$("$CLIENT" test eval --name "$name" \
+        "return package.searchpath('libs.focus_space', package.path)" 2>&1 | sed -n '2p')
+    "$CLIENT" test stop --name "$name" >/dev/null 2>&1
+    echo "  searchpath('libs.focus_space') = $resolved"
+    target=$(readlink -f "$CONFIG_CFG/libs/focus_space.lua")
+    resolved_real=$(readlink -f "$resolved" 2>/dev/null)
+    if [ -n "$resolved_real" ] && [ "$resolved_real" = "$target" ]; then
+        echo "  ok: resolves to the isolated config copy (realpath $target)"
+        return 0
+    fi
+    echo "  FAIL: expected realpath $target, got '$resolved_real'"
+    return 1
+}
+
+# --- live-session snapshot (before) -----------------------------------------
+# The live session must be untouched by the suite: wallpaper-state mtime and
+# both repos' git status are captured now and re-asserted by isolation_after().
+LIVE_WALLPAPER=$HOME/.local/state/somewm/wallpaper
+if [ -f "$LIVE_WALLPAPER" ]; then
+    WALLPAPER_BEFORE=$(stat -c %Y "$LIVE_WALLPAPER")
+else
+    WALLPAPER_BEFORE=missing
+fi
+GIT_CONFIG_BEFORE=$(git -C "$CONFIG_REPO" status --short)
+GIT_SHELL_BEFORE=$(git -C "$SHELL_REPO" status --short)
+
 # --- runner ----------------------------------------------------------------
 
 PASS=0; FAIL=0
 
-for fn in S1 S2 S3 S4 S5; do
+for fn in ISOLATION S1 S2 S3 S4 S5; do
     (
         trap 'exit 130' TERM
+        trap - EXIT
         "$fn"
     ) &
     local_pid=$!
@@ -396,6 +579,28 @@ for fn in S1 S2 S3 S4 S5; do
     kill "$watch_pid" 2>/dev/null
     wait "$watch_pid" 2>/dev/null
 done
+
+# After all scenarios: assert the live session is untouched.
+isolation_after() {
+    stage "ISOLATION: live session untouched"
+    local rc=0 wp gca gcb
+    wp=$(stat -c %Y "$LIVE_WALLPAPER" 2>/dev/null || echo missing)
+    echo "  wallpaper state mtime: before=$WALLPAPER_BEFORE after=$wp"
+    [ "$wp" = "$WALLPAPER_BEFORE" ] || { echo "  FAIL: live wallpaper state changed"; rc=1; }
+    gca=$(git -C "$CONFIG_REPO" status --short)
+    echo "  git -C $CONFIG_REPO status: [${gca}] (before [${GIT_CONFIG_BEFORE}])"
+    [ "$gca" = "$GIT_CONFIG_BEFORE" ] || { echo "  FAIL: config repo status changed"; rc=1; }
+    gcb=$(git -C "$SHELL_REPO" status --short)
+    echo "  git -C $SHELL_REPO status: [${gcb}] (before [${GIT_SHELL_BEFORE}])"
+    [ "$gcb" = "$GIT_SHELL_BEFORE" ] || { echo "  FAIL: quickshell repo status changed"; rc=1; }
+    [ "$rc" -eq 0 ] && echo "  ok: live session untouched"
+    return $rc
+}
+if isolation_after; then
+    PASS=$((PASS + 1))
+else
+    FAIL=$((FAIL + 1))
+fi
 
 echo
 echo "================================="

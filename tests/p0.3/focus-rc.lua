@@ -2,7 +2,10 @@
 local awful = require("awful")
 require("awful.autofocus")
 awful.layout.layouts = { awful.layout.suit.floating, awful.layout.suit.tile }
-package.path = "/home/humbe/.config/somewm/?.lua;/home/humbe/.config/somewm/?/init.lua;" .. package.path
+-- P0.11: resolve the personal config from the isolated config dir when the
+-- harness exports SOMEWM_TEST_CONFIG_DIR; fall back to the live config path.
+local cfg_dir = os.getenv("SOMEWM_TEST_CONFIG_DIR") or "/home/humbe/.config/somewm"
+package.path = cfg_dir .. "/?.lua;" .. cfg_dir .. "/?/init.lua;" .. package.path
 awesome.connect_signal("debug::error", function(err)
     io.stderr:write("ERROR: " .. tostring(err) .. "\n")
 end)
