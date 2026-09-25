@@ -4840,25 +4840,25 @@ luaA_client_get_frame_appearance(lua_State *L, client_t *c)
 static int
 luaA_client_set_frame_appearance(lua_State *L, client_t *c)
 {
+    int old = c->frame_appearance;
+
     if (lua_isnil(L, -1)) {
         c->frame_appearance = 0;
+    } else {
+        const char *val = luaL_checkstring(L, -1);
+        if (A_STREQ(val, "dark"))
+            c->frame_appearance = 1;
+        else if (A_STREQ(val, "light"))
+            c->frame_appearance = 2;
+        else {
+            warn("c.frame_appearance: invalid value '%s' "
+                "(expected \"dark\" or \"light\"); keeping current", val);
+            return 0;
+        }
+    }
+
+    if (c->frame_appearance != old)
         client_macos_frame_repaint(c);
-        luaA_object_emit_signal(L, -3, "property::frame_appearance", 0);
-        return 0;
-    }
-
-    const char *val = luaL_checkstring(L, -1);
-    if (A_STREQ(val, "dark"))
-        c->frame_appearance = 1;
-    else if (A_STREQ(val, "light"))
-        c->frame_appearance = 2;
-    else {
-        warn("c.frame_appearance: invalid value '%s' "
-            "(expected \"dark\" or \"light\"); keeping current", val);
-        return 0;
-    }
-
-    client_macos_frame_repaint(c);
     luaA_object_emit_signal(L, -3, "property::frame_appearance", 0);
     return 0;
 }
