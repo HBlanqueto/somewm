@@ -764,17 +764,229 @@ arrangelayer(Monitor *m, struct wl_list *list, struct wlr_box *usable_area, int 
 
 		wlr_scene_layer_surface_v1_configure(l->scene_layer, &full_area, usable_area);
 		/* Record the arranged anchor, then re-apply any tag-slide horizontal
-		 * offset on top of it. A slide moves the bar with the desktops, so a
-		 * mid-slide layer configure (any commit on this monitor) must not
+		 * offset and focus-space reveal vertical offset on top of it. A slide
+		 * or a reveal moves the bar with the action it belongs to, so a
+		 * mid-action layer configure (any commit on this monitor) must not
 		 * snap it back to the anchor; the anchor is captured fresh each time
-		 * so the slide driver can follow a mid-slide re-arrange too. */
+		 * so the drivers can follow a mid-action re-arrange too. */
 		l->slide_anchor_x = l->scene->node.x;
 		l->slide_anchor_y = l->scene->node.y;
-		if (l->slide_offset_x)
-			wlr_scene_node_set_position(&l->scene->node,
-				l->slide_anchor_x + l->slide_offset_x, l->slide_anchor_y);
-		wlr_scene_node_set_position(&l->popups->node, l->scene->node.x, l->scene->node.y);
+		layer_apply_position(l);
 	}
+}
+
+/* Focus-space reveal driver (bar/notch layer surfaces): in push mode the
+ * compositor moves the matched surfaces in the SAME tick as the client's
+ * visual offset, so the seam between bar and window never shows a lag gap.
+ * Like slide, matching is opt-in and the namespaces are registered from Lua
+ * (the global `reveal`, which mirrors `slide`), so C holds no bar name. */
+#define REVEAL_MAX_LAYER_NS 8
+#define REVEAL_DEFAULT_RANGE 32
+static char *reveal_layer_ns[REVEAL_MAX_LAYER_NS];
+static int reveal_layer_ns_count;
+static int reveal_range = REVEAL_DEFAULT_RANGE;
+static bool reveal_active;
+
+void
+reveal_set_layers(const char *const *namespaces, int count)
+{
+	int i;
+	for (i = 0; i < reveal_layer_ns_count; i++)
+		free(reveal_layer_ns[i]);
+	reveal_layer_ns_count = 0;
+	if (count > REVEAL_MAX_LAYER_NS)
+		count = REVEAL_MAX_LAYER_NS;
+	for (i = 0; i < count; i++)
+		reveal_layer_ns[reveal_layer_ns_count++] = strdup(namespaces[i]);
+}
+
+void
+reveal_set_range(int range)
+{
+	if (range > 0)
+		reveal_range = range;
+}
+
+static bool
+reveal_layer_match(const char *ns)
+{
+	int i;
+	if (!ns)
+		return false;
+	for (i = 0; i < reveal_layer_ns_count; i++)
+		if (reveal_layer_ns[i] && strcmp(reveal_layer_ns[i], ns) == 0)
+			return true;
+	return false;
+}
+
+void
+layer_apply_position(LayerSurface *l)
+{
+	int x, y;
+	if (!l || !l->scene)
+		return;
+	x = l->slide_anchor_x + l->slide_offset_x;
+	y = l->slide_anchor_y + l->reveal_offset_y;
+	wlr_scene_node_set_position(&l->scene->node, x, y);
+	wlr_scene_node_set_position(&l->popups->node, x, y);
+}
+
+static void
+reveal_apply_for(struct wl_list *list, int v)
+{
+	LayerSurface *l;
+	wl_list_for_each(l, list, link) {
+		if (!l->mapped || !l->scene || !l->layer_surface->namespace)
+			continue;
+		if (!reveal_layer_match(l->layer_surface->namespace))
+			continue;
+		l->reveal_offset_y = v - reveal_range;
+		layer_apply_position(l);
+	}
+}
+
+static void
+reveal_apply_monitor(Monitor *m, int v)
+{
+	int i;
+	if (!m)
+		return;
+	for (i = 0; i < 4; i++)
+		reveal_apply_for(&m->layers[i], v);
+}
+
+void
+reveal_activate(Client *c, int v)
+{
+	if (v < 0)
+		v = 0;
+	reveal_active = true;
+	if (c)
+		reveal_apply_monitor(c->mon, v);
+}
+
+void
+reveal_client_set(Client *c, int v)
+{
+	if (!reveal_active || !c)
+		return;
+	reveal_apply_monitor(c->mon, v);
+}
+
+void
+reveal_reset(void)
+{
+	Monitor *m;
+	LayerSurface *l;
+	int i;
+	reveal_active = false;
+	wl_list_for_each(m, &mons, link)
+		for (i = 0; i < 4; i++)
+			wl_list_for_each(l, &m->layers[i], link) {
+				if (l->mapped && l->scene && l->layer_surface->namespace
+						&& reveal_layer_match(l->layer_surface->namespace)) {
+					l->reveal_offset_y = 0;
+					layer_apply_position(l);
+				}
+			}
+}
+
+void
+reveal_hot_reload(lua_State *L)
+{
+	int i;
+	(void)L;
+	/* The Lua state is being torn down; the new rc.lua re-registers the
+	 * namespaces. Clear the state so a config that no longer opts in cannot
+	 * leave a stale translate on a surface. */
+	reveal_reset();
+	for (i = 0; i < reveal_layer_ns_count; i++)
+		free(reveal_layer_ns[i]);
+	reveal_layer_ns_count = 0;
+}
+
+/* ========================================================================
+ * Lua API: the `reveal` global (mirrors the `slide` global)
+ * ======================================================================== */
+
+static int
+luaA_reveal_set_layers(lua_State *L)
+{
+	const char *names[REVEAL_MAX_LAYER_NS];
+	int count = 0;
+	int range = -1;
+
+	if (!lua_istable(L, 1))
+		return luaL_argerror(L, 1, "expected a table of layer-shell namespaces");
+	lua_pushnil(L);
+	while (lua_next(L, 1) != 0 && count < REVEAL_MAX_LAYER_NS) {
+		if (lua_type(L, -1) == LUA_TSTRING)
+			names[count++] = lua_tostring(L, -1);
+		lua_pop(L, 1);
+	}
+	if (!lua_isnoneornil(L, 2))
+		range = (int)luaL_checkinteger(L, 2);
+	reveal_set_layers(names, count);
+	if (range > 0)
+		reveal_set_range(range);
+	return 0;
+}
+
+static int
+luaA_reveal_set_range(lua_State *L)
+{
+	reveal_set_range((int)luaL_checkinteger(L, 1));
+	return 0;
+}
+
+static int
+luaA_reveal_get_range(lua_State *L)
+{
+	lua_pushinteger(L, reveal_range);
+	return 1;
+}
+
+static int
+luaA_reveal_activate(lua_State *L)
+{
+	Client *c = NULL;
+	int v = 0;
+	if (!lua_isnoneornil(L, 1))
+		c = luaA_checkudata(L, 1, &client_class);
+	if (!lua_isnoneornil(L, 2))
+		v = (int)luaL_checkinteger(L, 2);
+	reveal_activate(c, v);
+	return 0;
+}
+
+static int
+luaA_reveal_reset(lua_State *L)
+{
+	reveal_reset();
+	return 0;
+}
+
+static int
+luaA_reveal_get_active(lua_State *L)
+{
+	lua_pushboolean(L, reveal_active);
+	return 1;
+}
+
+static const struct luaL_Reg reveal_methods[] = {
+	{ "set_layers", luaA_reveal_set_layers },
+	{ "set_range", luaA_reveal_set_range },
+	{ "range", luaA_reveal_get_range },
+	{ "activate", luaA_reveal_activate },
+	{ "reset", luaA_reveal_reset },
+	{ "active", luaA_reveal_get_active },
+	{ NULL, NULL }
+};
+
+void
+reveal_setup(lua_State *L)
+{
+	luaA_openlib(L, "reveal", reveal_methods, NULL);
 }
 
 void

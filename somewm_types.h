@@ -190,6 +190,14 @@ typedef struct LayerSurface {
 	int slide_offset_x;
 	int slide_anchor_x;
 	int slide_anchor_y;
+
+	/* Focus-space reveal: vertical scene offset applied on top of the
+	 * arranged anchor while the compositor drives the bar/notch reveal
+	 * (push mode). reveal_offset_y = v - reveal_range (negative, so the
+	 * bar sits flush with the window's top edge); 0 outside a reveal, so
+	 * composition with the tag-slide offset is seamless. Re-applied by
+	 * layer_apply_position() after every layer configure. */
+	int reveal_offset_y;
 } LayerSurface;
 
 /* PointerConstraint structure */

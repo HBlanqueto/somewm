@@ -4430,6 +4430,10 @@ luaA_client_set_visual_offset(lua_State *L, client_t *c)
         return 0;
     c->visual_offset_y = y;
     client_apply_scene_offset(c);
+    /* Move the bar/notch layer surfaces with the same tick, so the reveal
+     * seam never shows the IPC lag that used to require the Lua curtain.
+     * No-op unless a push reveal is active (or layers are unregistered). */
+    reveal_client_set(c, y);
     if (c->visual_offset_y > 0)
         client_offset_input_apply(c);
     else

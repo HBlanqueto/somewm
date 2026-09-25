@@ -284,6 +284,31 @@ static inline bool session_is_locked(void) {
 }
 
 /*
+ * Layer Surface / Slide API
+ */
+
+/* Compose the tag-slide horizontal offset and the focus-space reveal vertical
+ * offset over the arranged anchor (slide_anchor_x/y) and place the surface's
+ * node and popup tree. Re-applied by arrangelayer() after every layer
+ * configure, so neither a mid-slide nor a mid-reveal re-arrange can snap the
+ * surface back to the anchor. */
+void layer_apply_position(LayerSurface *l);
+
+/*
+ * Focus-space reveal (bar/notch) driver
+ * Move matched layer surfaces in the same tick as the client's visual offset,
+ * so there is never an IPC-lag gap at the seam. Namespaces are opt-in and
+ * registered from Lua (the `reveal` global), mirroring slide_set_sliding_layers.
+ */
+void reveal_set_layers(const char *const *namespaces, int count);
+void reveal_set_range(int range);
+void reveal_activate(Client *c, int v);
+void reveal_reset(void);
+void reveal_client_set(Client *c, int v);
+void reveal_setup(lua_State *L);
+void reveal_hot_reload(lua_State *L);
+
+/*
  * Hot-reload support - listener management for in-process Lua state rebuild
  */
 void client_remove_all_listeners(client_t *c);

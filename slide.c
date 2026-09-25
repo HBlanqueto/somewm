@@ -778,12 +778,11 @@ slide_apply_layers(int off_out, int off_in)
 			sl->anchor_x = l->slide_anchor_x;
 			sl->anchor_y = l->slide_anchor_y;
 
-			/* Incoming desktop: real, live bar glides in. */
+			/* Incoming desktop: real, live bar glides in. layer_apply_position
+			 * composes the reveal offset on top, so revealing mid-slide keeps
+			 * both offsets. */
 			l->slide_offset_x = off_in;
-			wlr_scene_node_set_position(&l->scene->node,
-				sl->anchor_x + off_in, sl->anchor_y);
-			wlr_scene_node_set_position(&l->popups->node,
-				sl->anchor_x + off_in, sl->anchor_y);
+			layer_apply_position(l);
 		}
 		/* If the surface died mid-slide, keep sliding the frozen copy from
 		 * the last known anchor; the real node is gone. */
@@ -811,11 +810,11 @@ slide_layers_teardown(void)
 		if (sl->frozen)
 			wlr_scene_node_destroy(&sl->frozen->node); /* releases buffer locks */
 		if (l && l->scene) {
+			/* Restore the live bar to its arranged anchor plus any reveal
+			 * offset still active (the reveal survives the slide; it is the
+			 * slide offset that is being dropped). */
 			l->slide_offset_x = 0;
-			wlr_scene_node_set_position(&l->scene->node,
-				l->slide_anchor_x, l->slide_anchor_y);
-			wlr_scene_node_set_position(&l->popups->node,
-				l->slide_anchor_x, l->slide_anchor_y);
+			layer_apply_position(l);
 		}
 	}
 	slide.layers_count = 0;
