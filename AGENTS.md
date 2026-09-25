@@ -50,6 +50,19 @@ Nix build of this repo, pinned by `~/nixdots` as a flake input.
   orchestrator sets these itself) and must not run the real autostart (it
   spawns `quickshell -n`): pre-set `package.loaded["core.autostart"]` in the
   test config before loading the personal rc.lua.
+- P0.11 isolated harness: `tests/p0.3-gles2-smoke.sh [--keep] [--config
+  <ref|ruta>] [--shell <ref|ruta>]` runs every nested instance against a
+  throwaway copy of the personal config + quickshell under /tmp/p0.3/xdg/ with
+  XDG_CONFIG_HOME/XDG_STATE_HOME/XDG_CACHE_HOME pinned there. A ref becomes an
+  ephemeral `git worktree` (removed with `git worktree remove --force` in the
+  trap), an absolute path becomes a symlink (origin kept), and the default is a
+  detached worktree at each repo's main-branch HEAD. `settings.json` is not
+  versioned in the config repo, so the live file is copied read-only into the
+  isolated config dir. The suite asserts isolation (live wallpaper-state mtime
+  and both live repos' git status unchanged, `require()` anchored under
+  /tmp/p0.3/xdg/config). Never checkout/switch in ~/.config/somewm or
+  ~/.config/quickshell (live session; Quickshell reloads on change); develop in
+  a worktree and never edit ~/.config/somewm/settings.json.
 - Test artifacts go to /tmp, never into the repo.
 
 ## Adoption / rollback (requires explicit task permission)
