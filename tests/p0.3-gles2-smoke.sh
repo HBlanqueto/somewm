@@ -23,6 +23,10 @@ ART=/tmp/p0.3
 KEEP=0
 [ "${1:-}" = "--keep" ] && KEEP=1
 
+# Default runtime dir: the launching user's per-user runtime, not the agent's
+# inherited one, so instances never collide with the live session's sockets.
+export XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}
+
 SOMEWM=$ROOT/build-test/somewm
 CLIENT=$ROOT/build-test/somewm-client
 PATTERN=$ROOT/build-test/test-content-pattern-client
@@ -112,30 +116,75 @@ capture() {
     echo "  ok: captured $out"
 }
 
-# Fraction (0..1) of pure black pixels in a PPM, via ImageMagick histogram.
-black_fraction() {
-    local f=$1 total black
+# Fraction (0..1) of pixels matching a hex color in a PPM (ImageMagick).
+color_fraction() {
+    local f=$1 hex=$2 total count
     total=$(magick "$f" -format %c histogram:info:- 2>/dev/null | awk '{s+=$1} END{print s}')
-    black=$(magick "$f" -format %c histogram:info:- 2>/dev/null \
-        | grep -m1 "#000000" | awk '{gsub(":","",$1); print $1}')
+    count=$(magick "$f" -format %c histogram:info:- 2>/dev/null \
+        | grep -im1 "#${hex}" | awk '{gsub(":","",$1); print $1}')
     [ -z "$total" ] || [ "$total" = 0 ] && { echo "0"; return 1; }
-    [ -z "$black" ] && black=0
-    awk -v b="$black" -v t="$total" 'BEGIN{printf "%.4f", b/t}'
+    [ -z "$count" ] && count=0
+    awk -v c="$count" -v t="$total" 'BEGIN{printf "%.4f", c/t}'
 }
 
-# Threshold for pure black. Justified by the fork's slide rendering:
-# - FORWARD slide (1->2): the gap strip (slide.set_gap_color) is placed at
-#   m.x + m.width + off_out (slide.c:639) and slides INTO view, so the seam
-#   shows the gap color and healthy slides have ~0% black. A failed backdrop
-#   replaces the whole desktop with a black rect -> >=50% black.
-# - RETURN slide (2->1): off_out is positive, so the gap strip moves RIGHT
-#   off-screen and the seam between the two desktops shows the hidden root
-#   background = pure black. The seam is exactly slide_gap px wide (80/1280 =
-#   6.25%), NOT a failed backdrop. This is a fork rendering quirk (gap strip
-#   placement is direction-dependent), documented in the P0.3 report.
-# A threshold of 10% separates the healthy return seam (6.25%) from a real
-# failed backdrop (>=50%) with a wide margin on both sides.
-BLACK_THRESHOLD=0.10
+# Fraction (0..1) of pure black pixels in a PPM, via ImageMagick histogram.
+black_fraction() {
+    color_fraction "$1" "000000"
+}
+
+# P0.9 criteria. The gap strip is slide_gap px (80) wide on a 1280px output, so
+# at mid-slide the gap color covers 80/1280 = 6.25% of the frame. A healthy
+# slide must show it between 5% and 7.5% (the exact fraction, plus tolerance)
+# in BOTH directions. Pure black must stay below 0.5% at mid and at end (a
+# failed backdrop replaces the whole desktop with a black rect -> >=50%).
+#
+# Return-direction slides (2->1) currently FAIL the gap-color check: the gap
+# strip is placed at m.x + m.width + off_out (slide.c:639); with direction=-1
+# off_out is positive so the strip moves right, off-screen, and the seam shows
+# the hidden root background (black). This is P0.10. Return slides are therefore
+# XFAIL: they are expected to fail, and if they ever PASS the suite reports
+# XPASS and fails so the XFAIL marker must be removed.
+GAP_LO=0.05
+GAP_HI=0.075
+BLACK_MAX=0.005
+
+# Run a slide to tag $idx and assert P0.9 criteria. $dir is the artifact dir.
+# $gap is the hex gap color (e.g. ff0000). $xfail=1 marks a return-direction
+# slide as expected-failure (P0.10): a PASS there is reported as XPASS and
+# fails the run.
+# Echoes the measurement line; returns 0 pass / 1 fail / 2 xpass.
+run_slide() {
+    local name=$1 idx=$2 dir=$3 gap=$4 xfail=$5 mid end gm bm be rc
+    mkdir -p "$dir"
+    switch_tag "$name" "$idx"
+    sleep 1.0
+    mid="$dir/mid-$idx.ppm"
+    capture "$name" "$mid" || return 1
+    sleep 2.2
+    end="$dir/end-$idx.ppm"
+    capture "$name" "$end" || return 1
+    gm=$(color_fraction "$mid" "$gap")
+    bm=$(black_fraction "$mid"); be=$(black_fraction "$end")
+    echo "  [tag $idx] mid %gap=$gm mid %black=$bm end %black=$be"
+    rc=0
+    awk -v g="$gm" -v lo="$GAP_LO" -v hi="$GAP_HI" 'BEGIN{exit !(g>=lo && g<=hi)}' || rc=1
+    awk -v b="$bm" -v t="$BLACK_MAX" 'BEGIN{exit !(b<t)}' || rc=1
+    awk -v b="$be" -v t="$BLACK_MAX" 'BEGIN{exit !(b<t)}' || rc=1
+    if [ "$rc" -eq 0 ] && [ "$xfail" = 1 ]; then
+        echo "  XPASS: return slide to tag $idx meets criteria (remove the XFAIL, P0.10)"
+        return 2
+    fi
+    if [ "$rc" -eq 0 ]; then
+        echo "  ok: slide to tag $idx (gap $GAP_LO..$GAP_HI, black < $BLACK_MAX)"
+        return 0
+    fi
+    if [ "$xfail" = 1 ]; then
+        echo "  XFAIL: return slide to tag $idx fails gap/black criteria (P0.10, expected)"
+        return 1
+    fi
+    echo "  FAIL: slide to tag $idx (gap $GAP_LO..$GAP_HI, black < $BLACK_MAX)"
+    return 1
+}
 
 # Start an instance and assert GLES2 + clean log.
 start_gles2() {
@@ -167,28 +216,6 @@ switch_tag() {
         "for _,t in ipairs(screen[1].tags) do if t.name=='$idx' then t:view_only(); return 'switched' end end return 'notag'"
 }
 
-# Run a slide: switch to $idx, capture at ~mid (1s) and ~end (3.2s) of a 2s
-# slide, and assert the pure-black fraction stays under the threshold.
-run_slide() {
-    local name=$1 idx=$2 dir=$3 mid end bm be
-    mkdir -p "$dir"
-    switch_tag "$name" "$idx"
-    sleep 1.0
-    mid="$dir/mid-1-$idx.ppm"
-    capture "$name" "$mid" || return 1
-    sleep 2.2
-    end="$dir/end-1-$idx.ppm"
-    capture "$name" "$end" || return 1
-    bm=$(black_fraction "$mid"); be=$(black_fraction "$end")
-    echo "  mid %black=$bm  end %black=$be"
-    awk -v b="$bm" -v t="$BLACK_THRESHOLD" 'BEGIN{exit !(b<=t)}' \
-        || { echo "  FAIL: mid-slide black $bm > $BLACK_THRESHOLD ($mid)"; return 1; }
-    awk -v b="$be" -v t="$BLACK_THRESHOLD" 'BEGIN{exit !(b<=t)}' \
-        || { echo "  FAIL: end-slide black $be > $BLACK_THRESHOLD ($end)"; return 1; }
-    echo "  ok: slide to tag $idx clean (black <= $BLACK_THRESHOLD)"
-    return 0
-}
-
 # --- scenario 1: clean start ----------------------------------------------
 
 S1() {
@@ -203,15 +230,20 @@ S1() {
 S2() {
     stage "S2: slide with color wallpaper"
     start_gles2 s2 "$ROOT/tests/p0.3/base-rc.lua" || return 1
-    # Blue wallpaper + red slide gap: any pure black can only be a failed backdrop.
+    # Blue wallpaper + red slide gap: the gap fraction is the P0.9 criterion.
     eval_line s2 "require('awful').wallpaper { screen = screen[1], bg = '#3366cc' }; return 'wp'"
     eval_line s2 "slide.set_duration(2); return 'dur'"
     eval_line s2 "slide.set_gap_color('#ff0000'); return 'gap'"
     eval_line s2 "slide.set_sliding_layers({}); return 'sl'"
-    run_slide s2 2 "$ART/s2" || { stop_gles2 s2; return 1; }
-    run_slide s2 1 "$ART/s2" || { stop_gles2 s2; return 1; }
+    # Forward 1->2 must pass; return 2->1 is XFAIL (P0.10).
+    run_slide s2 2 "$ART/s2" "ff0000" 0 || { stop_gles2 s2; return 1; }
+    local rc
+    run_slide s2 1 "$ART/s2" "ff0000" 1; rc=$?
+    # rc==2 means XPASS: criteria met in a return slide -> remove the XFAIL.
+    [ "$rc" -eq 2 ] && { echo "  FAIL: return slide PASSED (XPASS) - remove XFAIL, P0.10 fixed"; stop_gles2 s2; return 1; }
+    [ "$rc" -eq 1 ] || { echo "  FAIL: unexpected run_slide rc=$rc"; stop_gles2 s2; return 1; }
     stop_gles2 s2
-    echo "  ok: S2"
+    echo "  ok: S2 (forward PASS, return XFAIL)"
 }
 
 # --- scenario 3: slide, image wallpaper ------------------------------------
@@ -225,10 +257,13 @@ S3() {
     eval_line s3 \
         "require('awful').wallpaper { screen = screen[1], bg = '#000000', widget = require('wibox.widget').imagebox('$img') }; return 'wp'"
     eval_line s3 "slide.set_duration(2); slide.set_gap_color('#ff0000'); slide.set_sliding_layers({}); return 'cfg'"
-    run_slide s3 3 "$ART/s3" || { stop_gles2 s3; return 1; }
-    run_slide s3 1 "$ART/s3" || { stop_gles2 s3; return 1; }
+    run_slide s3 3 "$ART/s3" "ff0000" 0 || { stop_gles2 s3; return 1; }
+    local rc
+    run_slide s3 1 "$ART/s3" "ff0000" 1; rc=$?
+    [ "$rc" -eq 2 ] && { echo "  FAIL: return slide PASSED (XPASS) - remove XFAIL, P0.10 fixed"; stop_gles2 s3; return 1; }
+    [ "$rc" -eq 1 ] || { echo "  FAIL: unexpected run_slide rc=$rc"; stop_gles2 s3; return 1; }
     stop_gles2 s3
-    echo "  ok: S3"
+    echo "  ok: S3 (forward PASS, return XFAIL)"
 }
 
 # --- scenario 4: hot-reload x1, x2, x3, each followed by a slide ------------
@@ -237,6 +272,7 @@ S4() {
     stage "S4: hot-reload x1..x3, each + slide"
     start_gles2 s4 "$ROOT/tests/p0.3/base-rc.lua" || return 1
     eval_line s4 "require('awful').wallpaper { screen = screen[1], bg = '#3366cc' }; return 'wp'"
+    local n rc
     for n in 1 2 3; do
         local before after
         before=$(grep -c "hot-reload: complete" "$(instance_log s4)" || true)
@@ -255,10 +291,22 @@ S4() {
         # After a reload the C slide state (duration/gap) survives; wallpaper
         # is re-applied by rc.lua-less config, so set the slide knobs again.
         eval_line s4 "slide.set_duration(2); slide.set_gap_color('#ff0000'); return 'cfg'"
-        run_slide s4 2 "$ART/s4/r$n" || { stop_gles2 s4; return 1; }
+        # The reload cleared prev_selected, so the first switch after it is
+        # instant (no slide). Ensure we land on tag 1 first, then slide 1->2
+        # (real slide, forward) and 2->1 (return, XFAIL). Guarantees every
+        # reload is followed by a real forward slide.
+        switch_tag s4 1 >/dev/null
+        sleep 0.5
+        run_slide s4 2 "$ART/s4/r$n" "ff0000" 0 || { stop_gles2 s4; return 1; }
+        run_slide s4 1 "$ART/s4/r$n" "ff0000" 1; rc=$?
+        if [ "$rc" -eq 2 ]; then
+            echo "  FAIL: return slide PASSED (XPASS) after reload #$n - remove XFAIL, P0.10 fixed"
+            stop_gles2 s4; return 1
+        fi
+        [ "$rc" -eq 1 ] || { echo "  FAIL: unexpected run_slide rc=$rc"; stop_gles2 s4; return 1; }
     done
     stop_gles2 s4
-    echo "  ok: S4"
+    echo "  ok: S4 (forward PASS each reload, return XFAIL)"
 }
 
 # --- scenario 5: focus space ------------------------------------------------
