@@ -23,6 +23,7 @@
 #include "objects/client.h"
 #include "objects/screen.h"
 #include "slide.h"
+#include "background_effect.h"
 #include "screenshot_compose.h"
 #include "somewm_types.h"
 #include <xkbcommon/xkbcommon.h>
@@ -1066,6 +1067,9 @@ wallpaper_cache_show(wallpaper_cache_entry_t *entry, int screen_index)
 	 * next slide builds from this surface. */
 	slide_wallpaper_changed();
 
+	/* And re-render the panel's cached optimized blur. */
+	background_effect_invalidate();
+
 	luaA_emit_signal_global("wallpaper_changed");
 	return true;
 }
@@ -1344,6 +1348,9 @@ root_set_wallpaper_cached(lua_State *L, cairo_pattern_t *pattern)
 	/* The visible wallpaper changed: drop the slide-owned snapshot so the
 	 * next slide builds from this surface. */
 	slide_wallpaper_changed();
+
+	/* And re-render the panel's cached optimized blur. */
+	background_effect_invalidate();
 
 	luaA_emit_signal_global("wallpaper_changed");
 	result = true;

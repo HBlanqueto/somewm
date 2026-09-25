@@ -15,13 +15,15 @@
 #ifdef HAVE_SCENEFX
 
 /* Global blur device parameters, applied once at startup and overridable
- * from Lua via awesome.set_blur_data(). */
-static int blur_data_num_passes = 2;
+ * from Lua via awesome.set_blur_data(). These are the compositor-policy
+ * defaults (macOS-like dual-kawase: heavy passes, strong saturation, little
+ * noise) that give the panel its glass look. */
+static int blur_data_num_passes = 3;
 static int blur_data_radius = 5;
-static float blur_data_noise = 0.1f;
+static float blur_data_noise = 0.02f;
 static float blur_data_brightness = 1.0f;
 static float blur_data_contrast = 1.0f;
-static float blur_data_saturation = 1.0f;
+static float blur_data_saturation = 1.8f;
 
 #endif /* HAVE_SCENEFX */
 
@@ -99,6 +101,18 @@ blur_set_fade(blur_nodes_t *blur, float fade)
 	wlr_scene_blur_set_strength(blur->node, blur->config.strength * fade);
 #else
 	(void)blur; (void)fade;
+#endif
+}
+
+void
+blur_set_only_bottom_layer(blur_nodes_t *blur, bool only_bottom)
+{
+#ifdef HAVE_SCENEFX
+	if (!blur || !blur->node)
+		return;
+	wlr_scene_blur_set_should_only_blur_bottom_layer(blur->node, only_bottom);
+#else
+	(void)blur; (void)only_bottom;
 #endif
 }
 

@@ -172,6 +172,18 @@ typedef struct LayerSurface {
 	blur_config_t *blur_config;
 	blur_nodes_t blur;
 
+	/* ext-background-effect-v1 backdrop blur (Quickshell panel). `enabled`
+	 * is driven by background_effect.c on every surface commit; `region` is
+	 * the applied surface-local blur region (empty = off). When enabled it
+	 * takes precedence over the Lua backdrop_blur above. `optimized` is the
+	 * SceneFX cache node that re-renders the blurred wallpaper only when
+	 * marked dirty. */
+	bool bg_blur_enabled;
+	pixman_region32_t bg_blur_region;
+#ifdef HAVE_SCENEFX
+	struct wlr_scene_optimized_blur *bg_blur_optimized;
+#endif
+
 	/* Compositor-driven opacity (-1 = unset, renders at 1.0). Mirrored
 	 * from the Lua `opacity` property; re-applied on every commit
 	 * because wlroots resets buffer opacity then. */

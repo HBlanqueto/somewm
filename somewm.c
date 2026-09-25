@@ -128,6 +128,7 @@
 #include "property.h"         /* Property system for Wayland and XWayland */
 #include "shadow.h"          /* Compositor-level shadow support */
 #include "blur.h"            /* Compositor-level backdrop blur support */
+#include "background_effect.h" /* ext-background-effect-v1 backdrop blur */
 #include "macos_frame.h"     /* Native macOS window frame */
 #include "ipc.h"
 #include "dbus.h"
@@ -2120,6 +2121,8 @@ createlayersurface(struct wl_listener *listener, void *data)
 	l = layer_surface->data = ecalloc(1, sizeof(*l));
 	l->type = LayerShell;
 	l->opacity = -1;
+	l->bg_blur_enabled = false;
+	pixman_region32_init(&l->bg_blur_region);
 	LISTEN(&surface->events.unmap, &l->unmap, unmaplayersurfacenotify);
 	LISTEN(&layer_surface->events.destroy, &l->destroy, destroylayersurfacenotify);
 
@@ -3815,8 +3818,17 @@ destroylayersurfacenotify(struct wl_listener *listener, void *data)
 	wl_list_remove(&l->unmap.link);
 	wl_list_remove(&l->surface_commit.link);
 	wl_list_remove(&l->crop_commit.link);
+	/* Drop ext-background-effect references before the scene tree dies. */
+	background_effect_layer_surface_destroy(l);
 	layer_surface_crop_release(l);
 	blur_release(&l->blur);
+#ifdef HAVE_SCENEFX
+	if (l->bg_blur_optimized) {
+		wlr_scene_node_destroy(&l->bg_blur_optimized->node);
+		l->bg_blur_optimized = NULL;
+	}
+#endif
+	pixman_region32_fini(&l->bg_blur_region);
 	free(l->rounded_config);
 	free(l->blur_config);
 	wlr_scene_node_destroy(&l->scene->node);
@@ -6222,6 +6234,10 @@ apply_or_test:
 		wlr_output_configuration_v1_send_failed(config);
 	wlr_output_configuration_v1_destroy(config);
 
+	/* Mode/scale changes alter the pixels behind the panel; rebuild the
+	 * cached optimized blur. */
+	background_effect_invalidate();
+
 	/* Force monitor refresh after output config change */
 	updatemons(NULL, NULL);
 }
@@ -6430,6 +6446,11 @@ requestmonstate(struct wl_listener *listener, void *data)
 			lua_pop(globalconf_L, 1);
 		}
 	}
+
+	/* A mode/scale change alters the physical pixels behind the panel, so the
+	 * cached optimized blur must be re-rendered. */
+	if (committed & (WLR_OUTPUT_STATE_MODE | WLR_OUTPUT_STATE_SCALE))
+		background_effect_invalidate();
 
 	updatemons(NULL, NULL);
 }
@@ -7711,6 +7732,9 @@ setup(void)
 
 	layer_shell = wlr_layer_shell_v1_create(dpy, 3);
 	wl_signal_add(&layer_shell->events.new_surface, &new_layer_surface);
+
+	/* Backdrop blur for the panel (ext-background-effect-v1). */
+	background_effect_init(dpy);
 
 	idle_notifier = wlr_idle_notifier_v1_create(dpy);
 

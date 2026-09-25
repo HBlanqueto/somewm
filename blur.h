@@ -66,6 +66,10 @@ void blur_release(blur_nodes_t *blur);
 /** Scale the node's alpha/strength by `fade` (0..1), for opacity fades. */
 void blur_set_fade(blur_nodes_t *blur, float fade);
 
+/** Sample the SceneFX cached optimized blur instead of re-blurring the live
+ * backdrop (the optimized-blur path for static backdrops like wallpapers). */
+void blur_set_only_bottom_layer(blur_nodes_t *blur, bool only_bottom);
+
 /** Global blur device parameters; forwards to wlr_scene_set_blur_data. */
 void blur_set_data(struct wlr_scene *scene, int num_passes, int radius,
 	float noise, float brightness, float contrast, float saturation);

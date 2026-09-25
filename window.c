@@ -1579,6 +1579,99 @@ client_blur_update(Client *c)
 #endif
 }
 
+/* Release a layer surface's blur nodes (backdrop node plus the SceneFX
+ * optimized cache node). */
+static void
+layer_surface_blur_release(LayerSurface *l)
+{
+#ifdef HAVE_SCENEFX
+	if (l->bg_blur_optimized) {
+		wlr_scene_node_destroy(&l->bg_blur_optimized->node);
+		l->bg_blur_optimized = NULL;
+	}
+#endif
+	blur_release(&l->blur);
+}
+
+/* Fit or destroy the blur node driven by ext-background-effect-v1. The panel
+ * blur is a plain rectangle (no corners, no transparency mask) backed by the
+ * SceneFX optimized blur cache. */
+static void
+layer_surface_bg_blur_update(LayerSurface *l)
+{
+	static const blur_config_t config = {
+		.enabled = true,
+		.corner_radius = 0,
+		.alpha = 1.0f,
+		.strength = 1.0f,
+	};
+	struct wlr_box area;
+	pixman_box32_t *extents;
+	int sw, sh;
+
+	if (!l->mapped || pixman_region32_empty(&l->bg_blur_region)) {
+		layer_surface_blur_release(l);
+		return;
+	}
+
+	extents = pixman_region32_extents(&l->bg_blur_region);
+	sw = l->layer_surface->current.actual_width
+		? l->layer_surface->current.actual_width
+		: l->layer_surface->current.desired_width;
+	sh = l->layer_surface->current.actual_height
+		? l->layer_surface->current.actual_height
+		: l->layer_surface->current.desired_height;
+
+	/* The protocol region is surface-local; clip it to the surface size. */
+	area = (struct wlr_box){
+		.x = extents->x1,
+		.y = extents->y1,
+		.width = extents->x2 - extents->x1,
+		.height = extents->y2 - extents->y1,
+	};
+	if (area.x < 0) {
+		area.width += area.x;
+		area.x = 0;
+	}
+	if (area.y < 0) {
+		area.height += area.y;
+		area.y = 0;
+	}
+	if (area.x + area.width > sw)
+		area.width = sw - area.x;
+	if (area.y + area.height > sh)
+		area.height = sh - area.y;
+	if (area.width <= 0 || area.height <= 0) {
+		layer_surface_blur_release(l);
+		return;
+	}
+
+	blur_apply(l->scene, &l->blur, &config, &area, NULL, NULL);
+	blur_set_only_bottom_layer(&l->blur, true);
+	blur_set_fade(&l->blur,
+		l->opacity >= 0 ? (float)l->opacity : 1.0f);
+
+#ifdef HAVE_SCENEFX
+	if (l->blur.node) {
+		/* The optimized node re-renders the cached blurred wallpaper only
+		 * when marked dirty; it sits below the blur node so the cache is
+		 * refreshed before the blur samples it. */
+		if (!l->bg_blur_optimized)
+			l->bg_blur_optimized = wlr_scene_optimized_blur_create(l->scene,
+				area.width, area.height);
+		if (l->bg_blur_optimized) {
+			wlr_scene_optimized_blur_set_size(l->bg_blur_optimized,
+				area.width, area.height);
+			wlr_scene_node_set_position(&l->bg_blur_optimized->node,
+				area.x, area.y);
+			wlr_scene_node_place_below(&l->bg_blur_optimized->node,
+				&l->blur.node->node);
+		}
+		wlr_scene_node_lower_to_bottom(&l->blur.node->node);
+	}
+#endif
+}
+
 /* Fit or destroy a layer surface's blur node. */
 void
 layer_surface_blur_update(LayerSurface *l)
@@ -1591,8 +1684,15 @@ layer_surface_blur_update(LayerSurface *l)
 
 	if (!l || !l->scene || !l->layer_surface)
 		return;
+
+	/* The protocol-driven panel blur wins over the Lua backdrop_blur. */
+	if (l->bg_blur_enabled) {
+		layer_surface_bg_blur_update(l);
+		return;
+	}
+
 	if (!l->blur_config || !l->blur_config->enabled || !l->mapped) {
-		blur_release(&l->blur);
+		layer_surface_blur_release(l);
 		return;
 	}
 

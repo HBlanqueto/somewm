@@ -273,6 +273,7 @@ protocols = [
   # Local protocols
   ['protocols/wlr-layer-shell-unstable-v1.xml', 'enum-header'],
   ['protocols/wlr-output-power-management-unstable-v1.xml', 'server-header'],
+  ['protocols/ext-background-effect-v1.xml', 'server-header'],
 ]
 
 protocol_headers = []
@@ -299,6 +300,15 @@ foreach p : protocols
     command: [wayland_scanner, header_type, '@INPUT@', '@OUTPUT@'],
   )
 endforeach
+
+# Server-side protocol implementation (message/interface structs) for the
+# ext-background-effect-v1 module, which implements the protocol directly.
+bg_effect_server_code = custom_target(
+  'ext-background-effect-v1-protocol.c',
+  input: 'protocols/ext-background-effect-v1.xml',
+  output: 'ext-background-effect-v1-protocol.c',
+  command: [wayland_scanner, 'private-code', '@INPUT@', '@OUTPUT@'],
+)
 
 # Client protocol headers for test utilities
 wayland_client = dependency('wayland-client')
@@ -491,6 +501,7 @@ somewm_sources = [
   'systray.c',
   'shadow.c',
   'blur.c',
+  'background_effect.c',
   'strut.c',
   'property.c',
   'dbus.c',
@@ -579,6 +590,7 @@ somewm_exe = executable(
   protocol_headers,
   keyboard_shortcuts_inhibit_client_header,
   keyboard_shortcuts_inhibit_client_code,
+  bg_effect_server_code,
   dependencies: all_deps,
   include_directories: include_directories('.'),
   install: true,
