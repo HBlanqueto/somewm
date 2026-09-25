@@ -655,7 +655,13 @@ arrange(Monitor *m)
 				continue;
 
 			visible = client_isvisible(c);
-			wlr_scene_node_set_enabled(&c->scene->node, visible);
+			/* A pending ban (tag switch) defers the node flip: the slide
+			 * driver (or the unban/ban pass in banning_refresh, later in the
+			 * same cycle) is the visibility owner and MUST apply it
+			 * atomically, or a frame presented in between shows the
+			 * intermediate state (the flicker). */
+			if (!globalconf.need_lazy_banning)
+				wlr_scene_node_set_enabled(&c->scene->node, visible);
 			client_set_suspended(c, !visible);
 			/* Failsafe: a client banned by a tag switch drops its offset so it
 			 * cannot come back offset on the next tag. */

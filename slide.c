@@ -62,7 +62,7 @@ extern bool some_slide_root_bg_visible(void);
 static bool slide_enabled = true;
 static double slide_duration = 0.300;
 static int slide_easing = EASING_EASE_OUT_CUBIC;
-static int slide_gap = 40;
+static int slide_gap = 80;
 static float slide_gap_color[4] = { 0.0f, 0.0f, 0.0f, 1.0f };
 
 void
