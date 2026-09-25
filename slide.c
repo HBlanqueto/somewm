@@ -1360,7 +1360,10 @@ slide_handle_banning(void)
 				&& tag_is_alive(cur)
 				&& m->wlr_output && m->wlr_output->enabled) {
 			bool old_alive = tag_is_alive(prev);
-			int old_backdrop = old_alive ? prev->backdrop : p->backdrop;
+			/* A deleted focus tag has no faithful view to depart from; using
+			 * its black snapshot puts an empty black page under the slide
+			 * (wallpapers hidden) and reads as a black flash on leave/close. */
+			int old_backdrop = old_alive ? prev->backdrop : TAG_BACKDROP_WALLPAPER;
 			int old_index = p->index;
 			prev_selected_set(m, cur);
 			/* A deleted outgoing tag (focus-space leave) slides out as an
