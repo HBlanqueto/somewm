@@ -11,16 +11,18 @@
 #include "blur.h"
 
 #include <stdlib.h>
+#include <string.h>
 
 #ifdef HAVE_SCENEFX
+#include <wlr/util/log.h>
 
 /* Global blur device parameters, applied once at startup and overridable
- * from Lua via awesome.set_blur_data(). These are the compositor-policy
- * defaults (macOS-like dual-kawase: heavy passes, strong saturation, little
- * noise) that give the panel its glass look. */
-static int blur_data_num_passes = 3;
+ * from Lua via awesome.set_blur_data() / set_blur_preset(). macOS-like
+ * defaults reconstructed from Apple's backdrop filters: a ~30pt gaussian
+ * computed at 1/4 scale (passes 2, radius 5), strong saturation, no grain. */
+static int blur_data_num_passes = 2;
 static int blur_data_radius = 5;
-static float blur_data_noise = 0.02f;
+static float blur_data_noise = 0.0f;
 static float blur_data_brightness = 1.0f;
 static float blur_data_contrast = 1.0f;
 static float blur_data_saturation = 1.8f;
@@ -146,6 +148,10 @@ blur_apply_device_data(struct wlr_scene *scene)
 {
 	if (!scene)
 		return;
+	wlr_log(WLR_INFO, "blur device data: passes=%d radius=%d noise=%.2f "
+		"brightness=%.2f contrast=%.2f saturation=%.2f",
+		blur_data_num_passes, blur_data_radius, blur_data_noise,
+		blur_data_brightness, blur_data_contrast, blur_data_saturation);
 	wlr_scene_set_blur_data(scene, blur_data_num_passes, blur_data_radius,
 		blur_data_noise, blur_data_brightness, blur_data_contrast,
 		blur_data_saturation);
@@ -162,6 +168,21 @@ blur_set_data(struct wlr_scene *scene, int num_passes, int radius,
 	blur_data_contrast = contrast;
 	blur_data_saturation = saturation;
 	blur_apply_device_data(scene);
+}
+
+/* Apply a named blur preset; returns false for an unknown name. */
+bool
+blur_set_preset(struct wlr_scene *scene, const char *name)
+{
+	if (strcmp(name, "macos") == 0) {
+		blur_set_data(scene, 2, 5, 0.0f, 1.0f, 1.0f, 1.8f);
+		return true;
+	}
+	if (strcmp(name, "strong") == 0) {
+		blur_set_data(scene, 3, 5, 0.0f, 1.0f, 1.0f, 1.8f);
+		return true;
+	}
+	return false;
 }
 
 void
@@ -245,6 +266,13 @@ blur_set_data(struct wlr_scene *scene, int num_passes, int radius,
 {
 	(void)scene; (void)num_passes; (void)radius; (void)noise;
 	(void)brightness; (void)contrast; (void)saturation;
+}
+
+bool
+blur_set_preset(struct wlr_scene *scene, const char *name)
+{
+	(void)scene; (void)name;
+	return false;
 }
 
 void

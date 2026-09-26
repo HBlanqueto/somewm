@@ -2299,6 +2299,23 @@ luaA_awesome_set_blur_mode(lua_State *L)
 	return 0;
 }
 
+/** awesome.set_blur_preset("macos" | "strong")
+ * Apply a named blur preset. "macos" (the default) is the macOS menu bar
+ * look (passes 2, radius 5, no grain, saturation 1.8); "strong" uses one
+ * more pass (passes 3, radius 5). awesome.set_blur_data() still overrides
+ * individual parameters.
+ */
+static int
+luaA_awesome_set_blur_preset(lua_State *L)
+{
+	const char *name = luaL_checkstring(L, 1);
+
+	if (!blur_set_preset(some_get_scene(), name))
+		return luaL_error(L,
+			"invalid blur preset (expected \"macos\" or \"strong\")");
+	return 0;
+}
+
 /** Internal DPMS wake function (no signal emission).
  * Wakes all monitors that are currently asleep.
  * Returns true if any monitor was woken.
@@ -2561,6 +2578,7 @@ const luaL_Reg awesome_methods[] = {
 	/* SceneFX blur parameters */
 	{ "set_blur_data", luaA_awesome_set_blur_data },
 	{ "set_blur_mode", luaA_awesome_set_blur_mode },
+	{ "set_blur_preset", luaA_awesome_set_blur_preset },
 	/* DPMS (display power management) API methods */
 	{ "dpms_off", luaA_awesome_dpms_off },
 	{ "dpms_on", luaA_awesome_dpms_on },

@@ -86,6 +86,9 @@ void blur_set_mode(blur_mode_t mode);
 void blur_set_data(struct wlr_scene *scene, int num_passes, int radius,
 	float noise, float brightness, float contrast, float saturation);
 
+/** Apply a named blur preset ("macos" | "strong"); false if unknown. */
+bool blur_set_preset(struct wlr_scene *scene, const char *name);
+
 /** Apply the compiled-in blur device defaults to a freshly created scene. */
 void blur_setup_defaults(struct wlr_scene *scene);
 
