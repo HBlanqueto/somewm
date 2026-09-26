@@ -857,14 +857,20 @@ reveal_apply_monitor(Monitor *m, int v)
 		reveal_apply_for(&m->layers[i], v);
 }
 
-void
-reveal_activate(Client *c, int v)
+static void
+reveal_activate_monitor(Monitor *m, int v)
 {
 	if (v < 0)
 		v = 0;
 	reveal_active = true;
-	if (c)
-		reveal_apply_monitor(c->mon, v);
+	if (m)
+		reveal_apply_monitor(m, v);
+}
+
+void
+reveal_activate(Client *c, int v)
+{
+	reveal_activate_monitor(c ? c->mon : NULL, v);
 }
 
 void
@@ -952,12 +958,27 @@ static int
 luaA_reveal_activate(lua_State *L)
 {
 	Client *c = NULL;
+	screen_t *s = NULL;
 	int v = 0;
-	if (!lua_isnoneornil(L, 1))
-		c = luaA_checkudata(L, 1, &client_class);
+
+	/* Accept a client (window-driven reveal, unchanged) or a screen, so a
+	 * reveal can be driven on a screen's monitor without needing a client
+	 * (e.g. a space that owns no windows). */
+	if (!lua_isnoneornil(L, 1)) {
+		if (luaA_toudata(L, 1, &client_class))
+			c = luaA_checkudata(L, 1, &client_class);
+		else
+			s = luaA_checkscreen(L, 1);
+	}
 	if (!lua_isnoneornil(L, 2))
 		v = (int)luaL_checkinteger(L, 2);
-	reveal_activate(c, v);
+
+	if (c)
+		reveal_activate(c, v);
+	else if (s)
+		reveal_activate_monitor(s->monitor, v);
+	else
+		reveal_activate(NULL, v);
 	return 0;
 }
 
