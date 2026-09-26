@@ -41,6 +41,12 @@ typedef struct screen_t screen_t;
 ARRAY_TYPE(client_t *, client)
 #endif
 
+/** Tag client policies: whether a tag is willing to hold clients. */
+enum tag_client_policy {
+    TAG_CLIENT_POLICY_ALLOW = 0,
+    TAG_CLIENT_POLICY_REJECT,
+};
+
 /** Tag type - represents a workspace/desktop
  *
  * Tags in AwesomeWM (and somewm) are workspaces/virtual desktops.
@@ -72,6 +78,13 @@ typedef struct tag_t
     /** Desktop backdrop for this tag: TAG_BACKDROP_WALLPAPER (default) or
       * TAG_BACKDROP_BLACK (focus spaces). Lua property `backdrop`. */
     int backdrop;
+    /** Free-form role string ("" = none). Purely informational: lets a config
+      * and an external shell agree on what a tag is. Lua property `role`. */
+    char *role;
+    /** Client policy: TAG_CLIENT_POLICY_ALLOW (default) or
+      * TAG_CLIENT_POLICY_REJECT (refuses to hold clients). Lua property
+      * `client_policy`. */
+    int client_policy;
 } tag_t;
 
 /* Declare tag_array_t type - must come AFTER tag_t typedef */
@@ -106,6 +119,12 @@ void luaA_tags_init(lua_State *L, int tagcount, const char **tagnames);
 /* Property accessors (AwesomeWM compatibility) */
 bool tag_get_selected(tag_t *);
 char *tag_get_name(tag_t *);
+
+/* Drain the deferred client-relocation queue (tags with client_policy
+ * "reject"). Called from the return edge of the entry points that may have
+ * enqueued a refused client; a no-op when nothing is pending or a drain is
+ * already running. */
+void tag_relocate_drain(lua_State *L);
 
 #endif /* SOMEWM_OBJECTS_TAG_H */
 /* vim: filetype=c:expandtab:shiftwidth=4:tabstop=8:softtabstop=4:textwidth=80 */

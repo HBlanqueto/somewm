@@ -3801,6 +3801,12 @@ luaA_client_tags(lua_State *L)
 
         lua_pop(L, 1);
 
+        /* The add loop above may have refused clients on a reject tag: drain
+         * the deferred relocation queue before property::tags, with the
+         * setter's own iteration finished, so the emitted signal reflects the
+         * relocated state. */
+        tag_relocate_drain(L);
+
         luaA_object_emit_signal(L, -1, "property::tags", 0);
     }
 

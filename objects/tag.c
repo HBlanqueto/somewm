@@ -40,6 +40,166 @@ tag_wipe(tag_t *tag)
 {
 	client_array_wipe(&tag->clients);
 	p_delete(&tag->name);
+	p_delete(&tag->role);
+}
+
+/* Forward declaration: defined below, used by the fail-open path. */
+static void
+tag_client_emit_signal(tag_t *t, client_t *c, const char *signame);
+
+/* ========================================================================
+ * Refused-client relocation queue (client_policy "reject")
+ *
+ * tag_client() refuses to append a client to a reject tag and instead records
+ * the (tag, client) pair here. The actual request::relocate signal is emitted
+ * from tag_relocate_drain(), which the outermost callers run once their own
+ * mutation loop has finished, so a Lua handler can never re-enter a setter
+ * whose stack is only half-applied.
+ *
+ * While the queue drains, a pair already emitted in the same drain session is
+ * refused again (re-entrancy guard): a handler that sends the client back onto
+ * a reject tag cannot loop forever. After the session, any client that no
+ * handler placed is put back on the tag that refused it (fail-open): an
+ * untagged client is unreachable by the user, which is worse than a policy
+ * violation.
+ *
+ * The queue owns one tag reference per pending pair (transferred from
+ * tag_client(), or acquired by the client_policy eviction path) and releases
+ * it when the drain finishes.
+ * ======================================================================== */
+#define TAG_RELOCATE_MAX 32
+
+static tag_t *relocate_tags[TAG_RELOCATE_MAX];
+static client_t *relocate_clients[TAG_RELOCATE_MAX];
+static int relocate_count;
+
+static tag_t *relocate_emitted_tags[TAG_RELOCATE_MAX];
+static client_t *relocate_emitted_clients[TAG_RELOCATE_MAX];
+static int relocate_emitted_count;
+
+static bool relocate_draining;
+
+/** Record that a client was refused by a reject tag, deferring the signal.
+ * Takes ownership of the tag reference on success; releases it when the pair
+ * is already queued or emitted.
+ * \param t The refusing tag (holds one reference).
+ * \param c The refused client.
+ */
+static void
+tag_relocate_enqueue(tag_t *t, client_t *c)
+{
+	lua_State *L = globalconf_get_lua_State();
+	int i;
+
+	if (relocate_draining)
+		for (i = 0; i < relocate_emitted_count; i++)
+			if (relocate_emitted_tags[i] == t
+					&& relocate_emitted_clients[i] == c) {
+				luaA_object_unref(L, t);
+				return;
+			}
+	for (i = 0; i < relocate_count; i++)
+		if (relocate_tags[i] == t && relocate_clients[i] == c) {
+			luaA_object_unref(L, t);
+			return;
+		}
+	if (relocate_count >= TAG_RELOCATE_MAX) {
+		warn("tag: refused-client relocation queue full, dropping one");
+		luaA_object_unref(L, t);
+		return;
+	}
+	relocate_tags[relocate_count] = t;
+	relocate_clients[relocate_count] = c;
+	relocate_count++;
+}
+
+/** True if c is tagged with at least one tag.
+ */
+static bool
+client_has_any_tag(client_t *c)
+{
+	int i;
+	if (!c)
+		return false;
+	for (i = 0; i < globalconf.tags.len; i++)
+		if (is_client_tagged(c, globalconf.tags.tab[i]))
+			return true;
+	return false;
+}
+
+/** Emit the deferred request::relocate signals, then fail-open any client a
+ * handler left untagged. The guard makes nested calls (from handlers
+ * re-entering tag_client() and its setters) no-ops, so only the outermost
+ * caller actually drains.
+ */
+void
+tag_relocate_drain(lua_State *L)
+{
+	int i;
+
+	if (relocate_draining || relocate_count == 0)
+		return;
+
+	relocate_draining = true;
+
+	while (relocate_count > 0) {
+		tag_t *batch_tags[TAG_RELOCATE_MAX];
+		client_t *batch_clients[TAG_RELOCATE_MAX];
+		int n = relocate_count;
+
+		for (i = 0; i < n; i++) {
+			batch_tags[i] = relocate_tags[i];
+			batch_clients[i] = relocate_clients[i];
+		}
+		relocate_count = 0;
+
+		for (i = 0; i < n; i++) {
+			tag_t *t = batch_tags[i];
+			client_t *c = batch_clients[i];
+
+			if (relocate_emitted_count >= TAG_RELOCATE_MAX) {
+				luaA_object_unref(L, t);
+				continue;
+			}
+			relocate_emitted_tags[relocate_emitted_count] = t;
+			relocate_emitted_clients[relocate_emitted_count] = c;
+			relocate_emitted_count++;
+
+			/* tag:request::relocate(c, {reason = "reject"}) */
+			luaA_object_push(L, t);
+			luaA_object_push(L, c);
+			lua_newtable(L);
+			lua_pushliteral(L, "reject");
+			lua_setfield(L, -2, "reason");
+			luaA_object_emit_signal(L, -3, "request::relocate", 2);
+			lua_pop(L, 1);
+		}
+	}
+
+	for (i = 0; i < relocate_emitted_count; i++) {
+		client_t *c = relocate_emitted_clients[i];
+		tag_t *t = relocate_emitted_tags[i];
+
+		if (c && t && !client_has_any_tag(c)) {
+			client_array_append(&t->clients, c);
+			banning_need_update();
+			if (c->mon)
+				some_monitor_arrange(c->mon);
+			tag_client_emit_signal(t, c, "tagged");
+			warn("tag %s refuses clients but no tag that allows clients "
+			     "exists; placed the client on the refusing tag "
+			     "(fail-open)", t->name ? t->name : "?");
+			/* The queue's reference becomes the membership reference, matching
+			 * tag_client()'s accounting (untag_client() releases it later).
+			 * Dropping it here would let the activated tag be collected while
+			 * still in globalconf.tags. */
+			continue;
+		}
+		luaA_object_unref(L, t);
+	}
+
+	relocate_emitted_count = 0;
+	relocate_draining = false;
 }
 
 /** Helper functions for Lua compatibility */
@@ -80,6 +240,16 @@ tag_client(lua_State *L, client_t *c)
 	if (is_client_tagged(c, t))
 	{
 		luaA_object_unref(L, t);
+		return;
+	}
+
+	/* A tag whose client_policy is "reject" refuses to hold clients: defer a
+	 * request::relocate signal (the caller drains the queue once its own
+	 * mutation loop has finished) instead of appending. The tag reference
+	 * taken above is transferred to the queue and released by the drain. */
+	if (t->client_policy == TAG_CLIENT_POLICY_REJECT)
+	{
+		tag_relocate_enqueue(t, c);
 		return;
 	}
 
@@ -477,6 +647,93 @@ luaA_tag_set_backdrop(lua_State *L, tag_t *tag)
 	return 0;
 }
 
+/* ========================================================================
+ * Generic tag properties: role, client_policy
+ * ======================================================================== */
+
+/** Get tag role property (free-form string, "" when unset)
+ * \param L Lua state
+ * \param tag Tag object
+ * \return 1 (pushes the role string)
+ */
+static int
+luaA_tag_get_role(lua_State *L, tag_t *tag)
+{
+	lua_pushstring(L, tag->role ? tag->role : "");
+	return 1;
+}
+
+/** Set the tag role: a free-form string purely for a config and an external
+ * shell to agree on what a tag is.
+ * \param L The Lua VM state.
+ * \param tag The tag to set the role for.
+ * \return 0
+ */
+static int
+luaA_tag_set_role(lua_State *L, tag_t *tag)
+{
+	const char *s = luaL_checkstring(L, -1);
+	if (!tag->role || strcmp(tag->role, s) != 0) {
+		p_delete(&tag->role);
+		tag->role = a_strdup(s);
+		luaA_object_emit_signal(L, -3, "property::role", 0);
+	}
+	return 0;
+}
+
+/** Get tag client_policy property ("allow" or "reject")
+ * \param L Lua state
+ * \param tag Tag object
+ * \return 1 (pushes the policy string)
+ */
+static int
+luaA_tag_get_client_policy(lua_State *L, tag_t *tag)
+{
+	lua_pushstring(L, tag->client_policy == TAG_CLIENT_POLICY_REJECT
+		? "reject" : "allow");
+	return 1;
+}
+
+/** Set tag client_policy: "reject" marks a tag that refuses to hold clients;
+ * anything else resets to the default "allow". Switching to "reject" evicts
+ * any clients the tag already holds through the same request::relocate path
+ * the other routes use, so a config override still controls where they go.
+ * \param L Lua state
+ * \param tag Tag object
+ * \return 0
+ */
+static int
+luaA_tag_set_client_policy(lua_State *L, tag_t *tag)
+{
+	const char *s = luaL_checkstring(L, -1);
+	int policy = (s && strcmp(s, "reject") == 0)
+		? TAG_CLIENT_POLICY_REJECT : TAG_CLIENT_POLICY_ALLOW;
+
+	if (policy == tag->client_policy) {
+		luaA_object_emit_signal(L, -3, "property::client_policy", 0);
+		return 0;
+	}
+
+	tag->client_policy = policy;
+	luaA_object_emit_signal(L, -3, "property::client_policy", 0);
+
+	if (policy == TAG_CLIENT_POLICY_REJECT) {
+		/* Evict the clients this tag already holds. The tag is now reject,
+		 * so tag_client() refuses any attempt to put them back. */
+		while (tag->clients.len > 0) {
+			client_t *c = tag->clients.tab[0];
+
+			untag_client(c, tag);
+			/* Acquire the reference the queue owns until the drain. */
+			luaA_object_push(L, tag);
+			luaA_object_ref(L, -1);
+			tag_relocate_enqueue(tag, c);
+		}
+		tag_relocate_drain(L);
+	}
+	return 0;
+}
+
 /** Create a new tag object from Lua
  * \param L Lua state
  * \return 1 (pushes new tag)
@@ -538,6 +795,11 @@ luaA_tag_clients(lua_State *L)
 			tag_client(L, c);
 			lua_pop(L, 1);
 		}
+
+		/* The add loop above may have refused clients on a reject tag: drain
+		 * the deferred relocation queue only now, with the setter's own
+		 * iteration finished. */
+		tag_relocate_drain(L);
 	}
 
 	lua_createtable(L, clients->len, 0);
@@ -586,6 +848,8 @@ tag_class_setup(lua_State *L)
 		{ "mfact", (lua_class_propfunc_t) luaA_tag_set_mfact, (lua_class_propfunc_t) luaA_tag_get_mfact, (lua_class_propfunc_t) luaA_tag_set_mfact },
 		{ "nmaster", (lua_class_propfunc_t) luaA_tag_set_nmaster, (lua_class_propfunc_t) luaA_tag_get_nmaster, (lua_class_propfunc_t) luaA_tag_set_nmaster },
 		{ "backdrop", (lua_class_propfunc_t) luaA_tag_set_backdrop, (lua_class_propfunc_t) luaA_tag_get_backdrop, (lua_class_propfunc_t) luaA_tag_set_backdrop },
+		{ "role", (lua_class_propfunc_t) luaA_tag_set_role, (lua_class_propfunc_t) luaA_tag_get_role, (lua_class_propfunc_t) luaA_tag_set_role },
+		{ "client_policy", (lua_class_propfunc_t) luaA_tag_set_client_policy, (lua_class_propfunc_t) luaA_tag_get_client_policy, (lua_class_propfunc_t) luaA_tag_set_client_policy },
 	};
 	luaA_class_add_properties(&tag_class, properties, countof(properties));
 }

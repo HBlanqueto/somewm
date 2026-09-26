@@ -5530,6 +5530,10 @@ mapnotify(struct wl_listener *listener, void *data)
 			}
 		}
 
+		/* A reject tag cannot hold a client: drain the deferred relocation
+		 * queue now, before the transient's manage signal runs. */
+		tag_relocate_drain(L);
+
 		/* c->tags removed - tags managed by arrays */
 
 		/* Set monitor (setmon will handle resize, arrange, etc.) */
@@ -5609,6 +5613,12 @@ mapnotify(struct wl_listener *listener, void *data)
 				tag_client(L, c);
 			}
 		}
+
+		/* A reject tag cannot hold a client: drain the deferred relocation
+		 * queue now, before setmon() and the manage signals run. The client's
+		 * own screen is still unset, so the Lua default handler resolves the
+		 * destination from the refusing tag's screen. */
+		tag_relocate_drain(L);
 
 		/* c->tags removed - tags managed by arrays */
 

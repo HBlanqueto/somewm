@@ -348,6 +348,65 @@ function permissions.tag(c, t, hints) --luacheck: no unused
     end
 end
 
+--- Relocate a client that a tag refused to hold.
+--
+-- Default handler for `request::relocate`, emitted on a tag whose
+-- `client_policy` is "reject" when a client would be placed on it. Places
+-- the client on the first activated tag that allows clients, preferring the
+-- refusing tag's screen (during initial manage the client has no screen yet,
+-- so the destination must come from the tag). If the client already keeps
+-- other tags that allow clients, nothing is done. When no tag that allows
+-- clients exists anywhere, C fail-opens and puts the client back on the
+-- refusing tag, so this handler only warns in that case.
+--
+-- A config overrides the destination by connecting its own handler to
+-- `request::relocate`; it runs after this one and its `c:tags()` call wins.
+--
+-- @signalhandler awful.permissions.tag_relocate
+-- @tparam tag t The refusing tag.
+-- @tparam client c The refused client.
+-- @tparam[opt={}] table hints Extra information.
+-- @sourcesignal tag request::relocate
+function permissions.tag_relocate(t, c, hints) --luacheck: no unused
+    if not (c and c.valid) then return end
+
+    -- The client already keeps other tags that allow clients: nothing to do.
+    for _, other in ipairs(c:tags()) do
+        if other ~= t and other.client_policy ~= "reject" then
+            return
+        end
+    end
+
+    local function first_allowed(s)
+        if not (s and s.valid) then return nil end
+        for _, cand in ipairs(s.tags) do
+            if cand.activated and cand ~= t
+                    and cand.client_policy ~= "reject" then
+                return cand
+            end
+        end
+        return nil
+    end
+
+    -- Prefer the refusing tag's screen (the client may have none yet).
+    local target = first_allowed(t.screen)
+    if not target then
+        for s in screen do
+            target = first_allowed(s)
+            if target then break end
+        end
+    end
+
+    if target then
+        c:tags({ target })
+    else
+        gdebug.print_warning(string.format(
+            "tag %q refuses clients but no tag that allows clients exists; "
+            .. "the client will be placed on the refusing tag (fail-open)",
+            tostring(t.name)))
+    end
+end
+
 --- Handle client urgent request
 -- @signalhandler awful.permissions.urgent
 -- @tparam client c A client
@@ -832,6 +891,19 @@ client.connect_signal("property::minimized"    , check_focus_delayed)
 client.connect_signal("property::sticky"       , check_focus_delayed)
 
 wibox.connect_signal("request::geometry"       , permissions.wibox_geometry)
+
+-- Default handler for `request::relocate` (see permissions.tag_relocate): it
+-- moves a client that a reject tag refused to the first tag that allows
+-- clients. A config that wants a different destination replaces this default,
+-- it does NOT run after it (running after tags the client twice, passing
+-- through a destination the config never asked for). Disconnect the default,
+-- then connect your own:
+--
+--     tag.disconnect_signal("request::relocate", awful.permissions.tag_relocate)
+--     tag.connect_signal("request::relocate", function(t, c, hints)
+--         c:tags({ my_destination })
+--     end)
+tag.connect_signal("request::relocate"         , permissions.tag_relocate)
 
 tag.connect_signal("property::selected", function (t)
     timer.delayed_call(check_focus_tag, t)
