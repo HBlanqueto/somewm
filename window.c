@@ -1659,9 +1659,14 @@ layer_surface_bg_blur_update(LayerSurface *l)
 			 * clean backdrop first; a cache refreshed after the blur samples
 			 * it would feed the panel's own pixels back into the blur. */
 			wlr_scene_node_lower_to_bottom(&l->blur.node->node);
-			if (!l->bg_blur_optimized)
+			if (!l->bg_blur_optimized) {
 				l->bg_blur_optimized = wlr_scene_optimized_blur_create(l->scene,
 					area.width, area.height);
+				/* A fresh cache node starts clean; mark it dirty so the first
+				 * frame populates it instead of sampling uninitialized memory. */
+				if (l->bg_blur_optimized)
+					wlr_scene_optimized_blur_mark_dirty(l->bg_blur_optimized);
+			}
 			if (l->bg_blur_optimized) {
 				wlr_scene_optimized_blur_set_size(l->bg_blur_optimized,
 					area.width, area.height);
