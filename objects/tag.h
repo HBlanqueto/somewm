@@ -85,6 +85,12 @@ typedef struct tag_t
       * TAG_CLIENT_POLICY_REJECT (refuses to hold clients). Lua property
       * `client_policy`. */
     int client_policy;
+    /** Layer-shell namespaces that are this tag's visual content: surfaces
+      * with these namespaces are shown only while this tag is selected on its
+      * output and slide with it, exactly like the tag's clients. Lua property
+      * `layers` (list of strings, default empty = today's behaviour). */
+    char **layers;
+    int layers_len;
 } tag_t;
 
 /* Declare tag_array_t type - must come AFTER tag_t typedef */

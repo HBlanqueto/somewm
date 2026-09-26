@@ -137,6 +137,86 @@ slide_layer_ns_match(const char *ns)
 }
 
 /* ========================================================================
+ * tag.layers visibility (tag.layers: layer-shell namespaces that are a tag's
+ * visual content)
+ *
+ * A layer surface whose namespace is listed in some tag's `layers` is shown
+ * only while one such tag is selected on its output, and hidden otherwise —
+ * the same compositor-side rule that hides a tag's clients (the surface keeps
+ * itself mapped; only the scene node is toggled). Namespaces claimed by no tag
+ * are left untouched, so today's behaviour is preserved bit for bit.
+ * ======================================================================== */
+
+/* -1: claimed by no tag on m (leave alone). 0: claimed but no claiming tag is
+ * selected (hide). 1: claimed and some claiming tag is selected (show). */
+static int
+tag_layer_visibility(Monitor *m, const char *ns)
+{
+	bool claimed = false;
+	int i;
+	if (!ns || !m)
+		return -1;
+	for (i = 0; i < globalconf.tags.len; i++) {
+		tag_t *t = globalconf.tags.tab[i];
+		int j;
+		if (!t || !t->screen || t->screen->monitor != m)
+			continue;
+		for (j = 0; j < t->layers_len; j++) {
+			if (t->layers[j] && strcmp(t->layers[j], ns) == 0) {
+				claimed = true;
+				if (t->selected)
+					return 1;
+			}
+		}
+	}
+	return claimed ? 0 : -1;
+}
+
+/* Apply tag.layers visibility to every layer surface on m. Skipped while a
+ * slide runs on m (the slide owns their node) or while a tag switch is still
+ * pending (need_lazy_banning): banning_refresh (no slide) or slide_teardown
+ * (slide) applies the final state then, so the outgoing surface can still be
+ * slid out instead of being snapped hidden mid-switch. */
+void
+slide_layer_tag_visibility_sync(Monitor *m)
+{
+	LayerSurface *l;
+	int li;
+	if (!m || slide_active_on(m) || globalconf.need_lazy_banning)
+		return;
+	for (li = 0; li < 4; li++)
+		wl_list_for_each(l, &m->layers[li], link) {
+			int vis;
+			if (!l->scene || !l->layer_surface->namespace)
+				continue;
+			vis = tag_layer_visibility(m, l->layer_surface->namespace);
+			if (vis >= 0)
+				wlr_scene_node_set_enabled(&l->scene->node, vis == 1);
+		}
+}
+
+void
+slide_layer_tag_visibility_sync_all(void)
+{
+	Monitor *m;
+	wl_list_for_each(m, &mons, link)
+		slide_layer_tag_visibility_sync(m);
+}
+
+/* True when ns is in t's layers list. */
+static bool
+tag_layer_ns_in(tag_t *t, const char *ns)
+{
+	int i;
+	if (!t || !ns)
+		return false;
+	for (i = 0; i < t->layers_len; i++)
+		if (t->layers[i] && strcmp(t->layers[i], ns) == 0)
+			return true;
+	return false;
+}
+
+/* ========================================================================
  * Previous-selection snapshot (drives the 1->1 detection)
  * ======================================================================== */
 
@@ -250,6 +330,17 @@ struct slide_layer {
 	struct wl_listener surface_destroy; /* clears ->l if the surface dies */
 };
 
+/* A tag.layers surface captured for a slide: its namespace is in the outgoing
+ * (side < 0) or incoming (side > 0) desktop's tag.layers, so the real node
+ * slides with that desktop (like a client) and the tag.layers sync hides the
+ * outgoing one at teardown. Sticky (in both) is captured as side 0. */
+#define SLIDE_MAX_TL_LAYERS 8
+struct slide_tl_layer {
+	LayerSurface *l;
+	int side;
+	struct wl_listener surface_destroy;
+};
+
 /* One wallpaper scene node the slide hid at start, with the exact enabled
  * state it had then. A destroy listener clears ->node if the node is replaced
  * or destroyed mid-slide (wallpaper change), so teardown never touches a freed
@@ -306,6 +397,9 @@ struct slide_state {
 	bool black_warned;     /* one clear warning per slide on a black degrade */
 	struct slide_layer layers[SLIDE_MAX_LAYERS];
 	int layers_count;
+	/* tag.layers surfaces sliding with the outgoing/incoming desktop. */
+	struct slide_tl_layer tl[SLIDE_MAX_TL_LAYERS];
+	int tl_count;
 	struct wl_event_source *timer; /* 1 ms fallback driver */
 	int frames;  /* tick frames of the current (or last) slide */
 	double last_apply;  /* monotonic time of the last applied frame */
@@ -619,6 +713,7 @@ slide_apply_desktop(struct slide_desktop *d, int offset)
 }
 
 static void slide_apply_layers(int off_out, int off_in);
+static void slide_tl_apply(int off_out, int off_in);
 
 static void
 slide_apply(double eased)
@@ -631,6 +726,7 @@ slide_apply(double eased)
 	slide_apply_desktop(&slide.out, off_out);
 	slide_apply_desktop(&slide.in, off_in);
 	slide_apply_layers(off_out, off_in);
+	slide_tl_apply(off_out, off_in);
 
 	/* The gap strip travels with the outgoing desktop's right edge, staying
 	 * exactly `slide_gap` px between the two desktops for the whole slide. */
@@ -821,6 +917,94 @@ slide_layers_teardown(void)
 }
 
 /* ========================================================================
+ * tag.layers surfaces in the slide
+ *
+ * A surface whose namespace is in the outgoing or incoming desktop's
+ * tag.layers slides with that desktop, using the same real-node translation
+ * the slide applies to clients (layer_apply_position, like the bar's live
+ * node) — there is no frozen copy for these, because the surface belongs to
+ * only one desktop. The outgoing side's real node is slid out and the
+ * tag.layers sync hides it at teardown (its tag is now deselected); the
+ * incoming side's node is slid in and left shown.
+ * ======================================================================== */
+
+static void
+slide_tl_surface_destroy(struct wl_listener *listener, void *data)
+{
+	struct slide_tl_layer *sl = wl_container_of(listener, sl, surface_destroy);
+	(void)data;
+	wl_list_remove(&sl->surface_destroy.link);
+	wl_list_init(&sl->surface_destroy.link);
+	sl->l = NULL;
+}
+
+static void
+slide_tl_capture(Monitor *m)
+{
+	int li;
+	slide.tl_count = 0;
+	for (li = 0; li < 4; li++) {
+		LayerSurface *l;
+		wl_list_for_each(l, &m->layers[li], link) {
+			struct slide_tl_layer *sl;
+			bool on_out, on_in;
+			if (slide.tl_count >= SLIDE_MAX_TL_LAYERS)
+				return;
+			if (!l->scene || !l->layer_surface->namespace)
+				continue;
+			on_out = tag_layer_ns_in(slide.old_tag, l->layer_surface->namespace);
+			on_in = tag_layer_ns_in(slide.new_tag, l->layer_surface->namespace);
+			if (!on_out && !on_in)
+				continue;
+			sl = &slide.tl[slide.tl_count++];
+			sl->l = l;
+			sl->side = on_in ? +1 : -1;
+			sl->surface_destroy.notify = slide_tl_surface_destroy;
+			wl_signal_add(&l->layer_surface->events.destroy, &sl->surface_destroy);
+			/* Show it for the animation; the tag.layers sync hides an outgoing
+			 * one at teardown. */
+			wlr_scene_node_set_enabled(&l->scene->node, true);
+			l->slide_offset_x = 0;
+			layer_apply_position(l);
+		}
+	}
+}
+
+static void
+slide_tl_apply(int off_out, int off_in)
+{
+	int i;
+	for (i = 0; i < slide.tl_count; i++) {
+		struct slide_tl_layer *sl = &slide.tl[i];
+		LayerSurface *l = sl->l;
+		if (!l || !l->scene)
+			continue;
+		l->slide_offset_x = (sl->side < 0) ? off_out : off_in;
+		layer_apply_position(l);
+	}
+}
+
+static void
+slide_tl_teardown(Monitor *m)
+{
+	int i;
+	for (i = 0; i < slide.tl_count; i++) {
+		struct slide_tl_layer *sl = &slide.tl[i];
+		LayerSurface *l = sl->l;
+		if (!wl_list_empty(&sl->surface_destroy.link))
+			wl_list_remove(&sl->surface_destroy.link);
+		if (l && l->scene) {
+			l->slide_offset_x = 0;
+			layer_apply_position(l);
+		}
+	}
+	slide.tl_count = 0;
+	/* Enforce the final tag.layers visibility (outgoing surface's tag is now
+	 * deselected: hidden; incoming's is selected: shown). */
+	slide_layer_tag_visibility_sync(m);
+}
+
+/* ========================================================================
  * Slide lifecycle
  * ======================================================================== */
 
@@ -922,6 +1106,9 @@ slide_teardown(bool emit_signal)
 	 * arranged anchors (offset 0). Safe whether the surface is alive or was
 	 * destroyed mid-slide (its destroy listener already removed itself). */
 	slide_layers_teardown();
+	/* Restore the tag.layers surfaces that slid with the desktops and hide
+	 * the outgoing tag's content (its tag is no longer selected). */
+	slide_tl_teardown(slide.mon);
 
 	/* Restore the global scene visibility we took over for the slide:
 	 * every wallpaper node back to the exact enabled state it had at slide
@@ -1134,6 +1321,7 @@ slide_start(Monitor *m, tag_t *old, int old_backdrop, int old_index, tag_t *new)
 	 * the incoming side. */
 	slide_layers_capture(m);
 	slide_apply_layers(0, slide.direction * slide.distance);
+	slide_tl_capture(m);
 
 	/* Take over the global scene visibility: record the exact enabled state
 	 * of every wallpaper node (legacy + per-screen cache) and the root

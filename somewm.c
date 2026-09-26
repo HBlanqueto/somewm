@@ -1069,6 +1069,14 @@ arrangelayers(Monitor *m)
 	for (i = 3; i >= 0; i--)
 		arrangelayer(m, &m->layers[i], &usable_area, 0);
 
+	/* Apply tag.layers visibility to this monitor's layer surfaces. Run AFTER
+	 * the configure/arrange above but BEFORE the keyboard-focus loop (which can
+	 * return early), because wlr_scene_layer_surface_v1_configure re-enables a
+	 * mapped surface's node; the sync hides a surface whose namespace is
+	 * claimed by a tag that is not selected. No-op while a slide runs on m
+	 * (the slide owns their node) or a tag switch is pending. */
+	slide_layer_tag_visibility_sync(m);
+
 	/* Find topmost keyboard interactive layer and emit request::keyboard signal
 	 * If the layer surface has a Lua object, let Lua decide whether to grant focus.
 	 * Otherwise, use legacy auto-grant behavior. */
