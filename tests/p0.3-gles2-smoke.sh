@@ -267,6 +267,19 @@ color_fraction() {
     awk -v c="$count" -v t="$total" 'BEGIN{printf "%.4f", c/t}'
 }
 
+# Sample one pixel (x,y) of a PPM as lowercase hex (#rrggbb).
+pixel_color() {
+    magick "$1" -format "%[hex:p{$2,$3}]" info: 2>/dev/null | tr 'A-F' 'a-f'
+}
+
+# Capture instance $name to $out and echo the fraction of pixels of color $hex.
+# capture()'s progress line goes to stderr so only the fraction reaches stdout.
+capture_to_frac() {
+    local name=$1 out=$2 hex=$3
+    capture "$name" "$out" >&2 || { echo "0"; return 1; }
+    color_fraction "$out" "$hex"
+}
+
 # Fraction (0..1) of pure black pixels in a PPM, via ImageMagick histogram.
 black_fraction() {
     color_fraction "$1" "000000"
@@ -535,6 +548,69 @@ ISOLATION() {
     return 1
 }
 
+# --- scenario 6: tag.layers ------------------------------------------------
+
+# tag.layers: a layer surface whose namespace is in a tag's layers list is shown
+# only while that tag is selected, hidden otherwise, and slides with the tag.
+# Zero window clients: the only content is a 100x100 gray surface (namespace
+# "tag-layer-test", tag "2" claims it) on a black background. Visible = the
+# gray fraction of the frame is ~1.1% (10000/1280*720); hidden = ~0%.
+S6() {
+    stage "S6: tag.layers (surface appears/disappears/slides with its tag)"
+    start_gles2 s6 "$ROOT/tests/p0.3/tag-layers-rc.lua" || return 1
+    mkdir -p "$ART/s6"
+    local LAYER=$ROOT/build-test/test-layer-client
+    # Tag 1 selected (default); spawn the surface on tag 2's namespace.
+    eval_line s6 "slide.set_duration(2); return 'dur'"
+    eval_line s6 "for _,t in ipairs(screen[1].tags) do if t.name=='1' then t:view_only(); return 'sel' end end return 'nf'"
+    local pid
+    pid=$(eval_line s6 "return tostring(require('awful').spawn('$LAYER --namespace tag-layer-test --anchor top,left --margin-left 0'))")
+    echo "  layer pid=$pid"
+    sleep 1.5
+    # Hidden while tag 2 (which claims the namespace) is not selected.
+    local f=$(capture_to_frac s6 "$ART/s6/hidden.ppm" "808080")
+    echo "  hidden: gray_fraction=$f"
+    awk -v f="$f" 'BEGIN{exit !(f < 0.002)}' || { echo "  FAIL: surface visible while tag not selected"; stop_gles2 s6; return 1; }
+    echo "  ok: hidden"
+    # Appears when tag 2 is selected (after the slide settles).
+    eval_line s6 "for _,t in ipairs(screen[1].tags) do if t.name=='2' then t:view_only(); return 'sel' end end return 'nf'"
+    sleep 3
+    f=$(capture_to_frac s6 "$ART/s6/shown.ppm" "808080")
+    echo "  shown: gray_fraction=$f"
+    awk -v f="$f" 'BEGIN{exit !(f >= 0.005)}' || { echo "  FAIL: surface not visible with tag selected"; stop_gles2 s6; return 1; }
+    echo "  ok: appears"
+    # Disappears when switching away to tag 1.
+    eval_line s6 "for _,t in ipairs(screen[1].tags) do if t.name=='1' then t:view_only(); return 'sel' end end return 'nf'"
+    sleep 3
+    f=$(capture_to_frac s6 "$ART/s6/away.ppm" "808080")
+    echo "  away: gray_fraction=$f"
+    awk -v f="$f" 'BEGIN{exit !(f < 0.002)}' || { echo "  FAIL: surface still visible after deselect"; stop_gles2 s6; return 1; }
+    echo "  ok: disappears"
+    # Slides into tag 2: mid-slide the surface is off its anchor. The whole-frame
+    # gray fraction stays ~full (the 100px surface is fully on-screen, shifted
+    # right from tag 1's lower index), so sample the anchor pixel (0,90): black
+    # while the surface has slid away, gray once it settles at the anchor.
+    eval_line s6 "for _,t in ipairs(screen[1].tags) do if t.name=='2' then t:view_only(); return 'sel' end end return 'nf'"
+    sleep 1.0
+    local active=$(eval_line s6 "return tostring(slide.active())")
+    local pc
+    capture s6 "$ART/s6/mid.ppm" >&2
+    pc=$(pixel_color "$ART/s6/mid.ppm" 0 90)
+    echo "  mid: anchor_pixel=$pc slide.active()=$active"
+    [ "$active" = "true" ] || { echo "  FAIL: no slide running"; stop_gles2 s6; return 1; }
+    [ "$pc" = "000000" ] || { echo "  FAIL: surface at anchor mid-slide (did not slide)"; stop_gles2 s6; return 1; }
+    echo "  ok: slides (off-anchor mid-slide)"
+    sleep 2
+    capture s6 "$ART/s6/end.ppm" >&2
+    pc=$(pixel_color "$ART/s6/end.ppm" 0 90)
+    echo "  end: anchor_pixel=$pc"
+    [ "$pc" = "808080" ] || { echo "  FAIL: surface not at anchor after slide"; stop_gles2 s6; return 1; }
+    echo "  ok: at anchor after slide"
+    log_clean s6 || { stop_gles2 s6; return 1; }
+    stop_gles2 s6
+    echo "  ok: S6"
+}
+
 # --- live-session snapshot (before) -----------------------------------------
 # The live session must be untouched by the suite: wallpaper-state mtime and
 # both repos' git status are captured now and re-asserted by isolation_after().
@@ -551,7 +627,7 @@ GIT_SHELL_BEFORE=$(git -C "$SHELL_REPO" status --short)
 
 PASS=0; FAIL=0
 
-for fn in ISOLATION S1 S2 S3 S4 S5; do
+for fn in ISOLATION S1 S2 S3 S4 S5 S6; do
     (
         trap 'exit 130' TERM
         trap - EXIT
@@ -571,7 +647,7 @@ for fn in ISOLATION S1 S2 S3 S4 S5; do
         FAIL=$((FAIL + 1))
         echo "  SCENARIO $fn FAILED (rc=$rc)"
         if [ "$KEEP" = 0 ]; then
-            for d in s1 s2 s3 s4 s5; do
+            for d in s1 s2 s3 s4 s5 s6; do
                 [ -d "$(state_dir "$d")" ] && "$CLIENT" test stop --name "$d" >/dev/null 2>&1
             done
         fi
