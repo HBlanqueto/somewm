@@ -41,6 +41,9 @@ tag_wipe(tag_t *tag)
 	client_array_wipe(&tag->clients);
 	p_delete(&tag->name);
 	p_delete(&tag->role);
+	for (int i = 0; i < tag->layers_len; i++)
+		p_delete(&tag->layers[i]);
+	p_delete(&tag->layers);
 }
 
 /* Forward declaration: defined below, used by the fail-open path. */
@@ -734,6 +737,58 @@ luaA_tag_set_client_policy(lua_State *L, tag_t *tag)
 	return 0;
 }
 
+/** Get tag layers property: the list of layer-shell namespaces that are this
+ *  tag's visual content. Empty when unset.
+ * \param L Lua state
+ * \param tag Tag object
+ * \return 1 (pushes a table of namespace strings)
+ */
+static int
+luaA_tag_get_layers(lua_State *L, tag_t *tag)
+{
+	lua_createtable(L, tag->layers_len, 0);
+	for (int i = 0; i < tag->layers_len; i++) {
+		lua_pushstring(L, tag->layers[i]);
+		lua_rawseti(L, -2, i + 1);
+	}
+	return 1;
+}
+
+/** Set tag layers: the list of layer-shell namespaces that are this tag's
+ *  visual content. A layer surface whose namespace is listed here is shown
+ *  only while this tag (or another listing it) is selected on its output and
+ *  slides with it. Any other namespace list replaces the previous one; an
+ *  empty list restores today's behaviour (nothing claimed). Refreshes the
+ *  visibility of the affected layer surfaces immediately.
+ * \param L Lua state
+ * \param tag Tag object
+ * \return 0
+ */
+static int
+luaA_tag_set_layers(lua_State *L, tag_t *tag)
+{
+	if (!lua_istable(L, -1))
+		return luaL_argerror(L, -1,
+			"expected a table of layer-shell namespaces");
+	for (int i = 0; i < tag->layers_len; i++)
+		p_delete(&tag->layers[i]);
+	tag->layers_len = 0;
+	tag->layers = NULL;
+	lua_pushnil(L);
+	while (lua_next(L, -2) != 0) {
+		if (lua_type(L, -1) == LUA_TSTRING) {
+			p_realloc(&tag->layers, tag->layers_len + 1);
+			tag->layers[tag->layers_len++] = a_strdup(lua_tostring(L, -1));
+		}
+		lua_pop(L, 1);
+	}
+	luaA_object_emit_signal(L, -3, "property::layers", 0);
+	/* Re-evaluate the visibility of every layer surface this tag claims. */
+	if (tag->screen && tag->screen->monitor)
+		slide_layer_tag_visibility_sync(tag->screen->monitor);
+	return 0;
+}
+
 /** Create a new tag object from Lua
  * \param L Lua state
  * \return 1 (pushes new tag)
@@ -850,6 +905,7 @@ tag_class_setup(lua_State *L)
 		{ "backdrop", (lua_class_propfunc_t) luaA_tag_set_backdrop, (lua_class_propfunc_t) luaA_tag_get_backdrop, (lua_class_propfunc_t) luaA_tag_set_backdrop },
 		{ "role", (lua_class_propfunc_t) luaA_tag_set_role, (lua_class_propfunc_t) luaA_tag_get_role, (lua_class_propfunc_t) luaA_tag_set_role },
 		{ "client_policy", (lua_class_propfunc_t) luaA_tag_set_client_policy, (lua_class_propfunc_t) luaA_tag_get_client_policy, (lua_class_propfunc_t) luaA_tag_set_client_policy },
+		{ "layers", (lua_class_propfunc_t) luaA_tag_set_layers, (lua_class_propfunc_t) luaA_tag_get_layers, (lua_class_propfunc_t) luaA_tag_set_layers },
 	};
 	luaA_class_add_properties(&tag_class, properties, countof(properties));
 }
