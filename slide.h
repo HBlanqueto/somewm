@@ -74,6 +74,13 @@ void slide_set_gap_color(const float rgba[4]);
  * (e.g. the bar). Only matching surfaces are moved or frozen-copied; the
  * notch, dock and helper surfaces stay fixed. */
 void slide_set_sliding_layers(const char *const *namespaces, int count);
+/* tag.layers visibility: re-enable/hide layer surfaces on m according to which
+ * tags currently select their namespace. No-op while a slide runs on m (the
+ * slide owns their node) or a tag switch is pending (banning_refresh /
+ * slide_teardown applies it). Unclaimed namespaces are left untouched. */
+void slide_layer_tag_visibility_sync(Monitor *m);
+/* Same, for every monitor (called from banning_refresh after a switch). */
+void slide_layer_tag_visibility_sync_all(void);
 /* Direct progress hook for a future touchpad gesture: p in [0,1]. When set,
  * the driver uses it instead of the clock. */
 void slide_set_progress(double p);

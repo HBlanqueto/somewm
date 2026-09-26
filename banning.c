@@ -68,6 +68,12 @@ banning_refresh(void)
     foreach(c, globalconf.clients)
         if(!client_isvisible(*c))
             client_ban(*c);
+
+    /* A tag switch without a slide: apply tag.layers visibility to layer
+     * surfaces now that the client ban/unban settled and need_lazy_banning is
+     * clear (the sync is deferred while a switch is pending so the slide can
+     * still slide the outgoing surface out). */
+    slide_layer_tag_visibility_sync_all();
 }
 
 // vim: filetype=c:expandtab:shiftwidth=4:tabstop=8:softtabstop=4:textwidth=80
