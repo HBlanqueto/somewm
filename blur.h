@@ -41,6 +41,14 @@ typedef struct blur_nodes_t {
 	float fade;                  /**< Fade multiplier, 1.0 = full */
 } blur_nodes_t;
 
+/** Protocol backdrop blur modes: "live" re-blurs the actual backdrop on every
+ * change; "optimized" caches a blurred snapshot that re-renders only when the
+ * wallpaper or the output mode/scale changes. */
+typedef enum {
+	BLUR_MODE_LIVE = 0,     /**< Regular wlr_scene_blur, re-blurs live (default) */
+	BLUR_MODE_OPTIMIZED = 1, /**< SceneFX optimized-blur cache node */
+} blur_mode_t;
+
 /** Parse a backdrop_blur value (boolean or config table). */
 bool blur_config_from_lua(lua_State *L, int idx, blur_config_t *config);
 
@@ -69,6 +77,10 @@ void blur_set_fade(blur_nodes_t *blur, float fade);
 /** Sample the SceneFX cached optimized blur instead of re-blurring the live
  * backdrop (the optimized-blur path for static backdrops like wallpapers). */
 void blur_set_only_bottom_layer(blur_nodes_t *blur, bool only_bottom);
+
+/** Get/set the protocol backdrop blur mode (blur_mode_t). */
+blur_mode_t blur_get_mode(void);
+void blur_set_mode(blur_mode_t mode);
 
 /** Global blur device parameters; forwards to wlr_scene_set_blur_data. */
 void blur_set_data(struct wlr_scene *scene, int num_passes, int radius,

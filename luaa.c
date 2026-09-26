@@ -2278,6 +2278,27 @@ luaA_awesome_set_blur_data(lua_State *L)
 	return 0;
 }
 
+/** awesome.set_blur_mode("live" | "optimized")
+ * Set the protocol backdrop blur mode for the panel. "live" (the default)
+ * re-blurs the actual backdrop whenever content under the panel changes;
+ * "optimized" caches a blurred snapshot that re-renders only when the
+ * wallpaper or the output mode/scale changes.
+ */
+static int
+luaA_awesome_set_blur_mode(lua_State *L)
+{
+	const char *mode = luaL_checkstring(L, 1);
+
+	if (strcmp(mode, "live") == 0)
+		blur_set_mode(BLUR_MODE_LIVE);
+	else if (strcmp(mode, "optimized") == 0)
+		blur_set_mode(BLUR_MODE_OPTIMIZED);
+	else
+		return luaL_error(L,
+			"invalid blur mode (expected \"live\" or \"optimized\")");
+	return 0;
+}
+
 /** Internal DPMS wake function (no signal emission).
  * Wakes all monitors that are currently asleep.
  * Returns true if any monitor was woken.
@@ -2539,6 +2560,7 @@ const luaL_Reg awesome_methods[] = {
 	{ "start_animation", luaA_start_animation },
 	/* SceneFX blur parameters */
 	{ "set_blur_data", luaA_awesome_set_blur_data },
+	{ "set_blur_mode", luaA_awesome_set_blur_mode },
 	/* DPMS (display power management) API methods */
 	{ "dpms_off", luaA_awesome_dpms_off },
 	{ "dpms_on", luaA_awesome_dpms_on },

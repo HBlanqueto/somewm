@@ -1594,8 +1594,10 @@ layer_surface_blur_release(LayerSurface *l)
 }
 
 /* Fit or destroy the blur node driven by ext-background-effect-v1. The panel
- * blur is a plain rectangle (no corners, no transparency mask) backed by the
- * SceneFX optimized blur cache. */
+ * blur is a plain rectangle (no corners, no transparency mask). In the default
+ * live mode a regular wlr_scene_blur node blurs whatever is under the panel
+ * every time it changes; the optimized mode additionally backs it with the
+ * SceneFX optimized-blur cache for static backdrops. */
 static void
 layer_surface_bg_blur_update(LayerSurface *l)
 {
@@ -1647,27 +1649,38 @@ layer_surface_bg_blur_update(LayerSurface *l)
 	}
 
 	blur_apply(l->scene, &l->blur, &config, &area, NULL, NULL);
-	blur_set_only_bottom_layer(&l->blur, true);
 	blur_set_fade(&l->blur,
 		l->opacity >= 0 ? (float)l->opacity : 1.0f);
 
 #ifdef HAVE_SCENEFX
 	if (l->blur.node) {
-		/* The optimized node re-renders the cached blurred wallpaper only
-		 * when marked dirty; it sits below the blur node so the cache is
-		 * refreshed before the blur samples it. */
-		if (!l->bg_blur_optimized)
-			l->bg_blur_optimized = wlr_scene_optimized_blur_create(l->scene,
-				area.width, area.height);
-		if (l->bg_blur_optimized) {
-			wlr_scene_optimized_blur_set_size(l->bg_blur_optimized,
-				area.width, area.height);
-			wlr_scene_node_set_position(&l->bg_blur_optimized->node,
-				area.x, area.y);
-			wlr_scene_node_place_below(&l->bg_blur_optimized->node,
-				&l->blur.node->node);
+		if (blur_get_mode() == BLUR_MODE_OPTIMIZED) {
+			/* The cache node must sit below the blur node so it captures the
+			 * clean backdrop first; a cache refreshed after the blur samples
+			 * it would feed the panel's own pixels back into the blur. */
+			wlr_scene_node_lower_to_bottom(&l->blur.node->node);
+			if (!l->bg_blur_optimized)
+				l->bg_blur_optimized = wlr_scene_optimized_blur_create(l->scene,
+					area.width, area.height);
+			if (l->bg_blur_optimized) {
+				wlr_scene_optimized_blur_set_size(l->bg_blur_optimized,
+					area.width, area.height);
+				wlr_scene_node_set_position(&l->bg_blur_optimized->node,
+					area.x, area.y);
+				wlr_scene_node_place_below(&l->bg_blur_optimized->node,
+					&l->blur.node->node);
+			}
+			blur_set_only_bottom_layer(&l->blur, true);
+		} else {
+			/* Live blur: drop any stale cache node and blur the real backdrop
+			 * each frame (windows, the wallpaper, animations under the panel). */
+			if (l->bg_blur_optimized) {
+				wlr_scene_node_destroy(&l->bg_blur_optimized->node);
+				l->bg_blur_optimized = NULL;
+			}
+			wlr_scene_node_lower_to_bottom(&l->blur.node->node);
+			blur_set_only_bottom_layer(&l->blur, false);
 		}
-		wlr_scene_node_lower_to_bottom(&l->blur.node->node);
 	}
 #endif
 }

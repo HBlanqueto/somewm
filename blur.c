@@ -25,6 +25,9 @@ static float blur_data_brightness = 1.0f;
 static float blur_data_contrast = 1.0f;
 static float blur_data_saturation = 1.8f;
 
+/* Protocol panel blur mode (live by default; optimized is opt-in). */
+static blur_mode_t blur_mode = BLUR_MODE_LIVE;
+
 #endif /* HAVE_SCENEFX */
 
 bool
@@ -113,6 +116,25 @@ blur_set_only_bottom_layer(blur_nodes_t *blur, bool only_bottom)
 	wlr_scene_blur_set_should_only_blur_bottom_layer(blur->node, only_bottom);
 #else
 	(void)blur; (void)only_bottom;
+#endif
+}
+
+blur_mode_t
+blur_get_mode(void)
+{
+#ifdef HAVE_SCENEFX
+	return blur_mode;
+#else
+	return BLUR_MODE_LIVE;
+#endif
+}
+
+void
+blur_set_mode(blur_mode_t mode)
+{
+#ifdef HAVE_SCENEFX
+	if (mode == BLUR_MODE_LIVE || mode == BLUR_MODE_OPTIMIZED)
+		blur_mode = mode;
 #endif
 }
 
