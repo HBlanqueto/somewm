@@ -410,6 +410,68 @@ static struct slide_state slide;
 
 static struct slide_wp_source slide_wp_sources[SLIDE_MAX_WP_SOURCES];
 
+/* Per-frame slide tracer (SOMEWM_SLIDE_TRACE=1): logs the workspace translation
+ * (off_out/off_in) and, for every tag.layers surface captured by the slide, the
+ * offset applied and the resulting node position/enabled state. Measurement
+ * only; never changes behaviour. */
+static bool slide_trace_on;
+static bool slide_trace_checked;
+
+/* Read SOMEWM_SLIDE_TRACE exactly once. When it is unset the tracer stays off
+ * and the hot slide path pays only a single always-false boolean test per
+ * frame (no getenv, no call after the first slide). */
+static void
+slide_trace_init(void)
+{
+	if (!slide_trace_checked) {
+		slide_trace_checked = true;
+		slide_trace_on = getenv("SOMEWM_SLIDE_TRACE") != NULL;
+	}
+}
+
+#define SLIDE_TRACE(...) do { \
+	if (slide_trace_on) { \
+		fprintf(stderr, "[SLIDE-TRACE] " __VA_ARGS__); \
+	} \
+} while (0)
+
+/* Log the children of the background scene layer in tree order (first listed =
+ * bottommost), flagging the slide's own nodes and any captured tl surface so
+ * coverage/stacking can be read from the trace. */
+static void
+slide_trace_bg_order(void)
+{
+	struct wlr_scene_node *child;
+	int idx = 0;
+	if (!slide_trace_on)
+		return;
+	wl_list_for_each(child, &layers[LyrBg]->children, link) {
+		const char *tag = "";
+		if (slide.out.wallpaper && &slide.out.wallpaper->node == child)
+			tag = " [OUT-CROP]";
+		else if (slide.out.black_bg && &slide.out.black_bg->node == child)
+			tag = " [OUT-BLACK]";
+		else if (slide.in.wallpaper && &slide.in.wallpaper->node == child)
+			tag = " [IN-CROP]";
+		else if (slide.in.black_bg && &slide.in.black_bg->node == child)
+			tag = " [IN-BLACK]";
+		else if (slide.gap_rect && &slide.gap_rect->node == child)
+			tag = " [GAP]";
+		else {
+			for (int i = 0; i < slide.tl_count; i++) {
+				if (slide.tl[i].l && slide.tl[i].l->scene
+						&& &slide.tl[i].l->scene->node == child) {
+					tag = " [PLAYER]";
+					break;
+				}
+			}
+		}
+		SLIDE_TRACE("bgorder[%02d] x=%d y=%d enabled=%d type=%d%s\n",
+			idx++, child->x, child->y, child->enabled, child->type, tag);
+	}
+	SLIDE_TRACE("bgorder-total=%d\n", idx);
+}
+
 static double
 clock_now(void)
 {
@@ -652,6 +714,23 @@ slide_hide_wp_node(struct wlr_scene_buffer *node, bool is_legacy, int screen_ind
 	wlr_scene_node_set_enabled(&node->node, false);
 }
 
+/* The bottommost layer-shell surface tree in the background scene layer, or
+ * NULL when there is none. A desktop backdrop belongs to the same background
+ * layer as those surfaces and must render UNDER them (the wallpaper sits
+ * behind the layer's content), so a tag.layers background surface is never
+ * hidden behind its own desktop's backdrop mid-slide. The rule is purely about
+ * the layer: the background layer's surfaces are the tree nodes in LyrBg
+ * (wallpaper/crops are buffers); no knowledge of who is in the layer. */
+static struct wlr_scene_node *
+slide_bg_surface_bottommost(void)
+{
+	struct wlr_scene_node *child;
+	wl_list_for_each(child, &layers[LyrBg]->children, link)
+		if (child->type == WLR_SCENE_NODE_TREE)
+			return child;
+	return NULL;
+}
+
 /* Build the backdrop node for one desktop (called from slide_start). `kind`
  * is the tag backdrop kind; the outgoing desktop may come from a snapshot
  * when its tag was deleted, so it is passed explicitly rather than read off a
@@ -660,18 +739,26 @@ slide_hide_wp_node(struct wlr_scene_buffer *node, bool is_legacy, int screen_ind
  *
  * Fallback order: the slide-owned wallpaper snapshot → the currently visible
  * wallpaper scene node's buffer → solid black. A black degrade logs ONE clear
- * warning per slide, so it can never happen silently again. */
+ * warning per slide, so it can never happen silently again.
+ *
+ * The backdrop is placed below the background layer's surfaces: the desktop
+ * wallpaper must not cover the layer-shell content (e.g. a tag.layers surface)
+ * that renders on that desktop. It stays above the wallpaper and below the gap
+ * strip, unchanged relative to everything else. A black backdrop still covers
+ * the wallpaper (the wallpaper is below the background surfaces), so the
+ * focus-space black degrade is preserved. */
 static void
 desktop_backdrop_setup(struct slide_desktop *d, int kind, Monitor *m, struct wlr_box *box)
 {
 	struct slide_wp_source *src;
+	struct wlr_scene_node *bg_surface;
 
 	d->wallpaper = NULL;
 	d->black_bg = NULL;
 	d->black = (kind == TAG_BACKDROP_BLACK);
 	if (d->black) {
 		d->black_bg = black_rect_create(box);
-		return;
+		goto place;
 	}
 
 	src = slide_wp_ensure(m);
@@ -687,6 +774,15 @@ desktop_backdrop_setup(struct slide_desktop *d, int kind, Monitor *m, struct wlr
 				"node missing); falling back to solid black\n");
 			slide.black_warned = true;
 		}
+	}
+
+place:
+	bg_surface = slide_bg_surface_bottommost();
+	if (bg_surface) {
+		if (d->wallpaper)
+			wlr_scene_node_place_below(&d->wallpaper->node, bg_surface);
+		if (d->black_bg)
+			wlr_scene_node_place_below(&d->black_bg->node, bg_surface);
 	}
 }
 
@@ -710,6 +806,12 @@ slide_apply_desktop(struct slide_desktop *d, int offset)
 	if (d->black_bg)
 		wlr_scene_node_set_position(&d->black_bg->node,
 			slide.mon->m.x + offset, slide.mon->m.y);
+	if (slide_trace_on && d == &slide.out)
+		SLIDE_TRACE("ws-out f=%d offset=%d backdrop=%s node_x=%d\n",
+			slide.frames, offset,
+			d->black ? "black" : (d->wallpaper ? "wallpaper" : "none"),
+			d->black ? (d->black_bg ? d->black_bg->node.x : -9999)
+			         : (d->wallpaper ? d->wallpaper->node.x : -9999));
 }
 
 static void slide_apply_layers(int off_out, int off_in);
@@ -722,6 +824,9 @@ slide_apply(double eased)
 	int off_in = slide.direction * (int)llround((1.0 - eased) * slide.distance);
 
 	slide.frames++;
+
+	SLIDE_TRACE("apply f=%d eased=%.4f off_out=%d off_in=%d dir=%d dist=%d\n",
+		slide.frames, eased, off_out, off_in, slide.direction, slide.distance);
 
 	slide_apply_desktop(&slide.out, off_out);
 	slide_apply_desktop(&slide.in, off_in);
@@ -942,6 +1047,7 @@ static void
 slide_tl_capture(Monitor *m)
 {
 	int li;
+	slide_trace_init();
 	slide.tl_count = 0;
 	for (li = 0; li < 4; li++) {
 		LayerSurface *l;
@@ -966,6 +1072,9 @@ slide_tl_capture(Monitor *m)
 			wlr_scene_node_set_enabled(&l->scene->node, true);
 			l->slide_offset_x = 0;
 			layer_apply_position(l);
+			SLIDE_TRACE("tl-capture ns=%s layer=%d side=%d node=(%d,%d) enabled=%d\n",
+				l->layer_surface->namespace, li, sl->side,
+				l->scene->node.x, l->scene->node.y, l->scene->node.enabled);
 		}
 	}
 }
@@ -981,6 +1090,11 @@ slide_tl_apply(int off_out, int off_in)
 			continue;
 		l->slide_offset_x = (sl->side < 0) ? off_out : off_in;
 		layer_apply_position(l);
+		if (slide_trace_on)
+			SLIDE_TRACE("tl-apply f=%d ns=%s side=%d off=%d node=(%d,%d) enabled=%d\n",
+				slide.frames, l->layer_surface->namespace, sl->side,
+				l->slide_offset_x, l->scene->node.x, l->scene->node.y,
+				l->scene->node.enabled);
 	}
 }
 
@@ -994,8 +1108,16 @@ slide_tl_teardown(Monitor *m)
 		if (!wl_list_empty(&sl->surface_destroy.link))
 			wl_list_remove(&sl->surface_destroy.link);
 		if (l && l->scene) {
+			if (slide_trace_on)
+				SLIDE_TRACE("tl-teardown ns=%s side=%d before node=(%d,%d) enabled=%d\n",
+					l->layer_surface->namespace, sl->side,
+					l->scene->node.x, l->scene->node.y, l->scene->node.enabled);
 			l->slide_offset_x = 0;
 			layer_apply_position(l);
+			if (slide_trace_on)
+				SLIDE_TRACE("tl-teardown ns=%s side=%d after node=(%d,%d) enabled=%d\n",
+					l->layer_surface->namespace, sl->side,
+					l->scene->node.x, l->scene->node.y, l->scene->node.enabled);
 		}
 	}
 	slide.tl_count = 0;
@@ -1210,6 +1332,7 @@ slide_start(Monitor *m, tag_t *old, int old_backdrop, int old_index, tag_t *new)
 	slide.mon = m;
 	slide.old_tag = old;
 	slide.new_tag = new;
+	slide_trace_init();
 	slide.direction = +1; /* default; refined below */
 	slide.distance = m->m.width + slide_gap;
 	slide.t0 = clock_now();
@@ -1363,6 +1486,8 @@ slide_start(Monitor *m, tag_t *old, int old_backdrop, int old_index, tag_t *new)
 	/* Apply eased=0 once now so the first presented frame shows the departure
 	 * posture; without it the incoming page can sit on screen one frame. */
 	slide_apply(0);
+
+	slide_trace_bg_order();
 
 	emit_slide_signal("slide_start", old, new, slide.direction);
 
