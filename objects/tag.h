@@ -91,6 +91,11 @@ typedef struct tag_t
       * `layers` (list of strings, default empty = today's behaviour). */
     char **layers;
     int layers_len;
+    /** The tag a space (focus/player) was created from, or NULL for an ordinary
+      * workspace. The pointer is only ever used as a Lua registry key (never
+      * dereferenced), so a deleted origin reads back as nil. Lua property
+      * `space_origin` (a tag, or nil). */
+    struct tag_t *space_origin;
 } tag_t;
 
 /* Declare tag_array_t type - must come AFTER tag_t typedef */

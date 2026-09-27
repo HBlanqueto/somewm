@@ -789,6 +789,43 @@ luaA_tag_set_layers(lua_State *L, tag_t *tag)
 	return 0;
 }
 
+/** Get tag space_origin property: the tag this space was created from, or nil
+ *  for an ordinary workspace. Returned by registry lookup, so a deleted origin
+ *  yields nil rather than a dangling value (the pointer is only ever a key).
+ * \param L Lua state
+ * \param tag Tag object
+ * \return 1 (pushes the origin tag or nil)
+ */
+static int
+luaA_tag_get_space_origin(lua_State *L, tag_t *tag)
+{
+	if (tag->space_origin)
+		luaA_object_push(L, tag->space_origin);
+	else
+		lua_pushnil(L);
+	return 1;
+}
+
+/** Set tag space_origin: the tag a space was created from (the insertion rule
+ *  for new spaces is defined purely in terms of it). unset (nil) for ordinary
+ *  workspaces.
+ * \param L Lua state
+ * \param tag Tag object
+ * \return 0
+ */
+static int
+luaA_tag_set_space_origin(lua_State *L, tag_t *tag)
+{
+	tag_t *origin = NULL;
+	if (!lua_isnil(L, -1))
+		origin = luaA_checkudata(L, -1, &tag_class);
+	if (tag->space_origin != origin) {
+		tag->space_origin = origin;
+		luaA_object_emit_signal(L, -3, "property::space_origin", 0);
+	}
+	return 0;
+}
+
 /** Create a new tag object from Lua
  * \param L Lua state
  * \return 1 (pushes new tag)
@@ -906,6 +943,7 @@ tag_class_setup(lua_State *L)
 		{ "role", (lua_class_propfunc_t) luaA_tag_set_role, (lua_class_propfunc_t) luaA_tag_get_role, (lua_class_propfunc_t) luaA_tag_set_role },
 		{ "client_policy", (lua_class_propfunc_t) luaA_tag_set_client_policy, (lua_class_propfunc_t) luaA_tag_get_client_policy, (lua_class_propfunc_t) luaA_tag_set_client_policy },
 		{ "layers", (lua_class_propfunc_t) luaA_tag_set_layers, (lua_class_propfunc_t) luaA_tag_get_layers, (lua_class_propfunc_t) luaA_tag_set_layers },
+		{ "space_origin", (lua_class_propfunc_t) luaA_tag_set_space_origin, (lua_class_propfunc_t) luaA_tag_get_space_origin, (lua_class_propfunc_t) luaA_tag_set_space_origin },
 	};
 	luaA_class_add_properties(&tag_class, properties, countof(properties));
 }
