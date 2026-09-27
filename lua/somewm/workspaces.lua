@@ -732,10 +732,18 @@ function M.enter_focus_space(c, origin, origin_index)
 
     local idx = type(origin_index) == "number" and origin_index or origin.index
     if type(idx) ~= "number" then idx = #screen.tags end
+    -- A new space goes after its origin and after every space whose
+    -- space_origin is that same origin, so the run stays in creation order.
+    for _, t in ipairs(screen.tags) do
+        if t.valid and t.space_origin == origin and t.index >= idx then
+            idx = t.index
+        end
+    end
     local tag = awful.tag.add(name, {
         index = idx + 1,
         screen = screen,
         layout = awful.layout.suit.max,
+        space_origin = origin,
         -- NOT volatile: a volatile focus tag is auto-deleted by awful on the
         -- client's "untagged" signal (before the compositor's close/unmanage
         -- handler can react), and tag.delete then selects the screen's first
