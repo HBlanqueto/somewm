@@ -307,6 +307,14 @@ void reveal_reset(void);
 void reveal_client_set(Client *c, int v);
 void reveal_setup(lua_State *L);
 void reveal_hot_reload(lua_State *L);
+/* Park-release across a slide: the slide driver eases every registered
+ * namespace on monitor m back to its anchor with the slide's eased progress,
+ * and flush() snaps a deferred release when no slide takes over the switch
+ * (or the slide ends). Generic: no namespace, player or role knowledge. */
+void reveal_release_apply(Monitor *m, double eased);
+void reveal_release_flush(void);
+/* True when a deferred reveal park release is waiting for a transition. */
+bool reveal_release_pending_state(void);
 
 /*
  * Hot-reload support - listener management for in-process Lua state rebuild

@@ -788,6 +788,10 @@ static char *reveal_layer_ns[REVEAL_MAX_LAYER_NS];
 static int reveal_layer_ns_count;
 static int reveal_range = REVEAL_DEFAULT_RANGE;
 static bool reveal_active;
+/* A space holding the reveal was left while a tag switch was pending: the
+ * parked surfaces are owed a release, and the slide (or the plain banning
+ * pass) animates them back to their anchor instead of a mid-transition snap. */
+static bool reveal_release_pending;
 
 void
 reveal_set_layers(const char *const *namespaces, int count)
@@ -863,6 +867,9 @@ reveal_activate_monitor(Monitor *m, int v)
 	if (v < 0)
 		v = 0;
 	reveal_active = true;
+	/* Re-driving the reveal supersedes a deferred park release: the arriving
+	 * space is parking or revealing again, not releasing to a desktop. */
+	reveal_release_pending = false;
 	if (m)
 		reveal_apply_monitor(m, v);
 }
@@ -881,22 +888,95 @@ reveal_client_set(Client *c, int v)
 	reveal_apply_monitor(c->mon, v);
 }
 
-void
-reveal_reset(void)
+/* Snap every registered surface on every monitor back to its anchor and clear
+ * the reveal state. Also ends a deferred park release. */
+static void
+reveal_reset_now(void)
 {
 	Monitor *m;
 	LayerSurface *l;
 	int i;
 	reveal_active = false;
+	reveal_release_pending = false;
 	wl_list_for_each(m, &mons, link)
 		for (i = 0; i < 4; i++)
 			wl_list_for_each(l, &m->layers[i], link) {
 				if (l->mapped && l->scene && l->layer_surface->namespace
 						&& reveal_layer_match(l->layer_surface->namespace)) {
 					l->reveal_offset_y = 0;
+					l->reveal_offset_from = 0;
+					l->reveal_releasing = false;
 					layer_apply_position(l);
 				}
 			}
+}
+
+void
+reveal_reset(void)
+{
+	LayerSurface *l;
+	int i;
+
+	/* Leaving a space that holds the reveal while a tag switch is pending
+	 * releases the park through the transition: capture the offsets and let
+	 * the slide (or the plain banning pass) ease them back, so the bar/notch
+	 * descend with the slide instead of popping at the switch. */
+	if (reveal_active && globalconf.need_lazy_banning) {
+		Monitor *m;
+		reveal_release_pending = true;
+		wl_list_for_each(m, &mons, link)
+			for (i = 0; i < 4; i++)
+				wl_list_for_each(l, &m->layers[i], link) {
+					if (!l->mapped || !l->scene || !l->layer_surface->namespace)
+						continue;
+					if (!reveal_layer_match(l->layer_surface->namespace))
+						continue;
+					l->reveal_offset_from = l->reveal_offset_y;
+					l->reveal_releasing = true;
+				}
+		return;
+	}
+	reveal_reset_now();
+}
+
+/* Ease a deferred park release: called by the slide driver with the eased
+ * progress (0 = still parked, 1 = fully released) for the slide's monitor. A
+ * surface captured at offset 0 (a reveal that was up) stays put. */
+void
+reveal_release_apply(Monitor *m, double eased)
+{
+	LayerSurface *l;
+	int i;
+	if (!reveal_release_pending || !m)
+		return;
+	for (i = 0; i < 4; i++)
+		wl_list_for_each(l, &m->layers[i], link) {
+			if (!l->mapped || !l->scene || !l->layer_surface->namespace)
+				continue;
+			if (!l->reveal_releasing)
+				continue;
+			if (!reveal_layer_match(l->layer_surface->namespace))
+				continue;
+			l->reveal_offset_y =
+				(int)llround(l->reveal_offset_from * (1.0 - eased));
+			layer_apply_position(l);
+		}
+}
+
+/* Snap a deferred park release to its end. Called by the plain banning pass
+ * when no slide took over the switch, and by the slide teardown. */
+void
+reveal_release_flush(void)
+{
+	if (!reveal_release_pending)
+		return;
+	reveal_reset_now();
+}
+
+bool
+reveal_release_pending_state(void)
+{
+	return reveal_release_pending;
 }
 
 void
@@ -906,8 +986,9 @@ reveal_hot_reload(lua_State *L)
 	(void)L;
 	/* The Lua state is being torn down; the new rc.lua re-registers the
 	 * namespaces. Clear the state so a config that no longer opts in cannot
-	 * leave a stale translate on a surface. */
-	reveal_reset();
+	 * leave a stale translate on a surface. A reload is not a transition:
+	 * snap the release, never defer it. */
+	reveal_reset_now();
 	for (i = 0; i < reveal_layer_ns_count; i++)
 		free(reveal_layer_ns[i]);
 	reveal_layer_ns_count = 0;

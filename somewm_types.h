@@ -210,6 +210,13 @@ typedef struct LayerSurface {
 	 * composition with the tag-slide offset is seamless. Re-applied by
 	 * layer_apply_position() after every layer configure. */
 	int reveal_offset_y;
+	/* Park-release animation: when a space that holds the reveal is left
+	 * while a tag switch is pending, reveal_reset() defers the snap and a
+	 * slide eases reveal_offset_y from reveal_offset_from back to 0 over the
+	 * slide's duration and curve. reveal_releasing marks a surface captured
+	 * for that release; cleared by the release flush. */
+	int reveal_offset_from;
+	bool reveal_releasing;
 } LayerSurface;
 
 /* PointerConstraint structure */

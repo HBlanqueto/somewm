@@ -327,6 +327,7 @@ struct slide_layer {
 	LayerSurface *l;                  /* the sliding layer surface */
 	struct wlr_scene_tree *frozen;    /* frozen copy of its buffers, or NULL */
 	int anchor_x, anchor_y;           /* last known arranged anchor */
+	int reveal_offset_y;              /* reveal offset at capture (frozen copy) */
 	struct wl_listener surface_destroy; /* clears ->l if the surface dies */
 };
 
@@ -404,6 +405,7 @@ struct slide_state {
 	int frames;  /* tick frames of the current (or last) slide */
 	double last_apply;  /* monotonic time of the last applied frame */
 	double last_frame_apply;  /* monotonic time of the last FRAME-driven apply */
+	bool reveal_release;  /* this slide is easing a deferred reveal park release */
 };
 
 static struct slide_state slide;
@@ -831,6 +833,9 @@ slide_apply(double eased)
 	slide_apply_desktop(&slide.out, off_out);
 	slide_apply_desktop(&slide.in, off_in);
 	slide_apply_layers(off_out, off_in);
+	/* A deferred reveal park release rides this slide: the bar/notch descend
+	 * to their anchors with the same eased progress as the desktops. */
+	reveal_release_apply(slide.mon, eased);
 	slide_tl_apply(off_out, off_in);
 
 	/* The gap strip travels with the outgoing desktop's right edge, staying
@@ -953,6 +958,7 @@ slide_layers_capture(Monitor *m)
 			sl = &slide.layers[slide.layers_count++];
 			sl->l = l;
 			sl->frozen = slide_layer_frozen_create(l);
+			sl->reveal_offset_y = l->reveal_offset_y;
 			sl->surface_destroy.notify = slide_layer_surface_destroy;
 			wl_signal_add(&l->layer_surface->events.destroy, &sl->surface_destroy);
 		}
@@ -988,10 +994,12 @@ slide_apply_layers(int off_out, int off_in)
 		/* If the surface died mid-slide, keep sliding the frozen copy from
 		 * the last known anchor; the real node is gone. */
 
-		/* Outgoing desktop: frozen copy slides out. */
+		/* Outgoing desktop: frozen copy slides out, holding the reveal offset
+		 * it had at capture so a parked bar (reveal_offset_y < 0) departs
+		 * parked instead of popping visible over the leaving desktop. */
 		if (sl->frozen)
 			wlr_scene_node_set_position(&sl->frozen->node,
-				sl->anchor_x + off_out, sl->anchor_y);
+				sl->anchor_x + off_out, sl->anchor_y + sl->reveal_offset_y);
 	}
 }
 
@@ -1228,6 +1236,11 @@ slide_teardown(bool emit_signal)
 	 * arranged anchors (offset 0). Safe whether the surface is alive or was
 	 * destroyed mid-slide (its destroy listener already removed itself). */
 	slide_layers_teardown();
+	/* End a deferred reveal park release, but only if THIS slide was the one
+	 * that captured it (a slide that started before the release was deferred
+	 * must not snap it for the slide that follows). */
+	if (slide.reveal_release)
+		reveal_release_flush();
 	/* Restore the tag.layers surfaces that slid with the desktops and hide
 	 * the outgoing tag's content (its tag is no longer selected). */
 	slide_tl_teardown(slide.mon);
@@ -1325,8 +1338,11 @@ slide_start(Monitor *m, tag_t *old, int old_backdrop, int old_index, tag_t *new)
 
 	slide_finish();
 
-	if (!m || !m->wlr_output || !m->wlr_output->enabled || m->m.width <= 0)
+	if (!m || !m->wlr_output || !m->wlr_output->enabled || m->m.width <= 0) {
+		/* No slide will animate a deferred reveal release: snap it now. */
+		reveal_release_flush();
 		return;
+	}
 
 	slide.active = true;
 	slide.mon = m;
@@ -1340,6 +1356,7 @@ slide_start(Monitor *m, tag_t *old, int old_backdrop, int old_index, tag_t *new)
 	slide.easing = slide_easing;
 	slide.eased = 0.0;
 	slide.manual = false;
+	slide.reveal_release = reveal_release_pending_state();
 	slide.frames = 0;
 	slide.last_apply = clock_now();
 	slide.last_frame_apply = clock_now();
