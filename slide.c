@@ -459,6 +459,9 @@ slide_trace_bg_order(void)
 			tag = " [IN-BLACK]";
 		else if (slide.gap_rect && &slide.gap_rect->node == child)
 			tag = " [GAP]";
+		else if (slide.mon && slide.mon->black_bg
+				&& &slide.mon->black_bg->node == child)
+			tag = " [PERSIST-BLACK]";
 		else {
 			for (int i = 0; i < slide.tl_count; i++) {
 				if (slide.tl[i].l && slide.tl[i].l->scene
@@ -829,6 +832,10 @@ slide_apply(double eased)
 
 	SLIDE_TRACE("apply f=%d eased=%.4f off_out=%d off_in=%d dir=%d dist=%d\n",
 		slide.frames, eased, off_out, off_in, slide.direction, slide.distance);
+
+	if (slide_trace_on && slide.mon && slide.mon->black_bg)
+		SLIDE_TRACE("persist-black f=%d enabled=%d\n",
+			slide.frames, slide.mon->black_bg->node.enabled);
 
 	slide_apply_desktop(&slide.out, off_out);
 	slide_apply_desktop(&slide.in, off_in);
@@ -1282,6 +1289,10 @@ slide_teardown(bool emit_signal)
 
 	/* Re-sync the persistent focus-space backdrop for the arriving tag. */
 	slide_backdrop_refresh(slide.mon);
+	if (slide_trace_on && slide.mon->black_bg)
+		SLIDE_TRACE("teardown f=%d persist-black enabled=%d node=(%d,%d)\n",
+			slide.frames, slide.mon->black_bg->node.enabled,
+			slide.mon->black_bg->node.x, slide.mon->black_bg->node.y);
 
 	motionnotify(0, NULL, 0, 0, 0, 0);
 
@@ -1384,6 +1395,8 @@ slide_start(Monitor *m, tag_t *old, int old_backdrop, int old_index, tag_t *new)
 		if (oi >= 0 && ni >= 0)
 			slide.direction = (ni > oi) ? +1 : -1;
 	}
+	SLIDE_TRACE("start old_idx=%d new_idx=%d dir=%d old_backdrop=%d new_backdrop=%d\n",
+		oi, tag_lua_index(new), slide.direction, old_backdrop, new->backdrop);
 
 	/* Collect the sliding clients. Clients visible on BOTH tags (or sticky)
 	 * stay put: they are on the arriving desktop already. When `old` is NULL
@@ -1482,6 +1495,19 @@ slide_start(Monitor *m, tag_t *old, int old_backdrop, int old_index, tag_t *new)
 	some_slide_set_root_bg_visible(false);
 	if (m->fullscreen_bg)
 		wlr_scene_node_set_enabled(&m->fullscreen_bg->node, false);
+	/* The persistent focus-space backdrop is a FULL-SCREEN rect in LyrBg that
+	 * gets enabled at the transition start when the arriving tag is black
+	 * (slide_backdrop_refresh_all runs before this); left enabled it would
+	 * cover the outgoing desktop - and any tag.layers surface still sliding
+	 * out with it - for the whole slide. Hide it for the duration: the slide's
+	 * own per-desktop backdrops draw both halves, and slide_teardown's
+	 * slide_backdrop_refresh() re-applies it for the arriving tag. */
+	if (slide_trace_on && m->black_bg)
+		SLIDE_TRACE("start f=%d persist-black enabled=%d node=(%d,%d)\n",
+			slide.frames, m->black_bg->node.enabled,
+			m->black_bg->node.x, m->black_bg->node.y);
+	if (m->black_bg)
+		wlr_scene_node_set_enabled(&m->black_bg->node, false);
 
 	/* Keyboard focus: the new tag's top client takes it at the start. */
 	c = focustop(m);
@@ -1614,6 +1640,15 @@ slide_backdrop_refresh(Monitor *m)
 	bool want_black = false;
 
 	if (!m)
+		return;
+
+	/* A slide owns the persistent backdrop for its duration: slide_start hid
+	 * the full-screen rect so the outgoing desktop keeps drawing, and applying
+	 * it again here (this runs on every banning cycle while the slide runs)
+	 * would re-cover the outgoing desktop mid-animation. The slide teardown
+	 * calls this after clearing the active flag, so the arriving tag still
+	 * gets its rect. */
+	if (slide_active_on(m))
 		return;
 
 	/* Any selected tag on this monitor with a black backdrop wins. */
