@@ -92,7 +92,7 @@ local function is_gray(r, g, b)
 end
 
 local function surface_visible()
-    local w, h, pix = capture()
+    local w, _, pix = capture()
     local r, g, b = rgb_at(pix, w, X, Y)
     return is_gray(r, g, b)
 end
@@ -112,7 +112,7 @@ runner.run_async(function()
     -- property contract: getter returns the list, setter replaces it + signal.
     assert(type(a.layers) == "table" and a.layers[1] == NS, "tag.layers getter")
     local fired = false
-    a.connect_signal("property::layers", function() fired = true end)
+    a:connect_signal("property::layers", function() fired = true end)
     a.layers = { "other" }
     assert(fired, "property::layers signal must fire on set")
     assert(type(a.layers) == "table" and a.layers[1] == "other", "tag.layers setter replaces")

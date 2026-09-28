@@ -315,6 +315,9 @@ void reveal_release_apply(Monitor *m, double eased);
 void reveal_release_flush(void);
 /* True when a deferred reveal park release is waiting for a transition. */
 bool reveal_release_pending_state(void);
+/* Self-healing: when the reveal list is empty and no slide/release owns the
+ * descent, return any leftover park offset to its anchor (logs when it fires). */
+void reveal_release_stale(void);
 
 /*
  * Hot-reload support - listener management for in-process Lua state rebuild
