@@ -1526,6 +1526,32 @@ buttonpress(struct wl_listener *listener, void *data)
 		/* Change focus if the button was _pressed_ over a client or layer surface */
 		xytonode(cursor->x, cursor->y, NULL, &c, &l, &drawin, &titlebar_drawable, NULL, NULL);
 
+		/* Outside-press watcher (generic, armed on demand via IPC): if armed,
+		 * broadcast when the press did not land on the watched namespace. The
+		 * compositor only OBSERVES here - it never consumes, so the press
+		 * continues to whatever it hit unchanged. */
+		{
+			const char *watch = ipc_outside_press_namespace();
+			if (watch) {
+				const char *hit;
+				if (l && l->layer_surface && l->layer_surface->namespace)
+					hit = l->layer_surface->namespace;
+				else if (c && !client_is_unmanaged(c))
+					hit = "client";
+				else if (drawin)
+					hit = "drawin";
+				else
+					hit = "desktop";
+				if (strcmp(hit, watch) != 0) {
+					char msg[192];
+					snprintf(msg, sizeof(msg),
+						"EVENT outside_press {\"ns\":\"%s\",\"target\":\"%s\",\"x\":%d,\"y\":%d}\n",
+						watch, hit, (int)cursor->x, (int)cursor->y);
+					ipc_broadcast(msg);
+				}
+			}
+		}
+
 		/* For Lua lock, only allow interaction with the lock surface */
 		if (some_is_lua_locked() && drawin != some_get_lua_lock_surface())
 			return;

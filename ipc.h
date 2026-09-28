@@ -50,4 +50,32 @@ bool ipc_has_subscribers(void);
  */
 void ipc_broadcast(const char *message);
 
+/* ---------------------------------------------------------------------------
+ * Outside-press watcher (generic, armed on demand)
+ *
+ * A subscriber (the shell) asks the compositor to notify it when a button
+ * press lands OUTSIDE a given layer-surface namespace, and can stop asking.
+ * While nobody has asked, the compositor broadcasts nothing. The fork stores
+ * only the watched namespace; it never learns what surface owns it. The press
+ * is OBSERVED, never consumed: the compositor broadcasts and the press
+ * continues to whatever it hit, unchanged.
+ */
+
+/**
+ * Arm the watcher on a namespace. A press whose target surface's namespace
+ * differs from `ns` (or that hits a client/drawin/empty desktop) broadcasts
+ * EVENT outside_press. Arm/disarm are idempotent.
+ */
+void ipc_outside_press_arm(const char *ns);
+
+/**
+ * Disarm the watcher: no further presses broadcast anything.
+ */
+void ipc_outside_press_disarm(void);
+
+/**
+ * The currently watched namespace, or NULL while disarmed.
+ */
+const char *ipc_outside_press_namespace(void);
+
 #endif /* IPC_H */

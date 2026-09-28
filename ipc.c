@@ -57,6 +57,37 @@ static struct wl_list ipc_clients;
 static int ipc_subscriber_count = 0;
 static char ipc_socket_path[256];
 
+/* ---------------------------------------------------------------------------
+ * Outside-press watcher. Generic and armed on demand: the shell sends
+ * `outside_press arm <ns>` to ask for a broadcast whenever a button press
+ * lands outside the namespace, and `outside_press disarm` to stop. Disarmed by
+ * default, so an idle session never emits a per-click event.
+ */
+static char outside_press_ns[64];
+static bool outside_press_armed;
+
+void
+ipc_outside_press_arm(const char *ns)
+{
+	if (!ns || !*ns)
+		return;
+	snprintf(outside_press_ns, sizeof(outside_press_ns), "%s", ns);
+	outside_press_armed = true;
+}
+
+void
+ipc_outside_press_disarm(void)
+{
+	outside_press_armed = false;
+	outside_press_ns[0] = '\0';
+}
+
+const char *
+ipc_outside_press_namespace(void)
+{
+	return outside_press_armed ? outside_press_ns : NULL;
+}
+
 const char *
 ipc_get_socket_path(void)
 {
@@ -435,6 +466,26 @@ static void
 ipc_process_command(struct ipc_client *client, const char *command)
 {
 	extern void ipc_dispatch_to_lua(int client_fd, const char *command);
+
+	/* The watcher primitive is handled here, not in Lua: the fork owns the
+	 * whole arm/disarm + observe cycle and learns nothing about the watched
+	 * namespace beyond the string the subscriber chose. */
+	if (strncmp(command, "outside_press ", 14) == 0) {
+		const char *arg = command + 14;
+		if (strncmp(arg, "arm ", 4) == 0 && arg[4] != '\0') {
+			ipc_outside_press_arm(arg + 4);
+			ipc_send_response(client->fd, "OK\n");
+			return;
+		}
+		if (strcmp(arg, "disarm") == 0) {
+			ipc_outside_press_disarm();
+			ipc_send_response(client->fd, "OK\n");
+			return;
+		}
+		ipc_send_response(client->fd,
+			"ERROR outside_press: expected 'arm <ns>' or 'disarm'\n");
+		return;
+	}
 
 	/* Dispatch to Lua layer */
 	ipc_dispatch_to_lua(client->fd, command);
