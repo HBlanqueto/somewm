@@ -793,10 +793,36 @@ static bool reveal_active;
  * pass) animates them back to their anchor instead of a mid-transition snap. */
 static bool reveal_release_pending;
 
+/* Per-frame reveal tracer (SOMEWM_SLIDE_TRACE=1): logs the effective reveal
+ * namespace list, every park offset applied, and every park-release step
+ * (deferral, per-frame ease, flush). Measurement only; never changes
+ * behaviour. */
+static bool reveal_trace_on;
+static bool reveal_trace_checked;
+
+#define REVEAL_TRACE(...) do { \
+	if (reveal_trace_on) { \
+		fprintf(stderr, "[REVEAL-TRACE] " __VA_ARGS__); \
+	} \
+} while (0)
+
+static void
+reveal_trace_init(void)
+{
+	if (!reveal_trace_checked) {
+		reveal_trace_checked = true;
+		reveal_trace_on = getenv("SOMEWM_SLIDE_TRACE") != NULL;
+	}
+}
+
+/* Defined below; exported for the banning pass (self-healing invariant). */
+void reveal_release_stale(void);
+
 void
 reveal_set_layers(const char *const *namespaces, int count)
 {
 	int i;
+	reveal_trace_init();
 	for (i = 0; i < reveal_layer_ns_count; i++)
 		free(reveal_layer_ns[i]);
 	reveal_layer_ns_count = 0;
@@ -804,6 +830,13 @@ reveal_set_layers(const char *const *namespaces, int count)
 		count = REVEAL_MAX_LAYER_NS;
 	for (i = 0; i < count; i++)
 		reveal_layer_ns[reveal_layer_ns_count++] = strdup(namespaces[i]);
+	REVEAL_TRACE("layers count=%d%s\n", count,
+		count ? "" : " (empty: ordinary desktop)");
+	/* An empty list means no reveal may match anything: an ordinary desktop is
+	 * (settling) on screen, so no surface may keep a park offset. Deferred
+	 * while a slide/release is still easing the descent. */
+	if (count == 0)
+		reveal_release_stale();
 }
 
 void
@@ -848,6 +881,8 @@ reveal_apply_for(struct wl_list *list, int v)
 			continue;
 		l->reveal_offset_y = v - reveal_range;
 		layer_apply_position(l);
+		REVEAL_TRACE("park ns=%s v=%d offset=%d\n",
+			l->layer_surface->namespace, v, l->reveal_offset_y);
 	}
 }
 
@@ -888,8 +923,11 @@ reveal_client_set(Client *c, int v)
 	reveal_apply_monitor(c->mon, v);
 }
 
-/* Snap every registered surface on every monitor back to its anchor and clear
- * the reveal state. Also ends a deferred park release. */
+/* Snap every registered surface back to its anchor and clear the reveal state.
+ * Also ends a deferred park release. Resets any surface still holding a park
+ * offset (or captured for a release), not only list-matched ones: the release
+ * flush must finish the descent even after the reveal owner already swapped
+ * the namespace list for the arriving space. */
 static void
 reveal_reset_now(void)
 {
@@ -901,13 +939,16 @@ reveal_reset_now(void)
 	wl_list_for_each(m, &mons, link)
 		for (i = 0; i < 4; i++)
 			wl_list_for_each(l, &m->layers[i], link) {
-				if (l->mapped && l->scene && l->layer_surface->namespace
-						&& reveal_layer_match(l->layer_surface->namespace)) {
-					l->reveal_offset_y = 0;
-					l->reveal_offset_from = 0;
-					l->reveal_releasing = false;
-					layer_apply_position(l);
-				}
+				if (!l->mapped || !l->scene || !l->layer_surface->namespace)
+					continue;
+				if (l->reveal_offset_y == 0 && !l->reveal_releasing)
+					continue;
+				l->reveal_offset_y = 0;
+				l->reveal_offset_from = 0;
+				l->reveal_releasing = false;
+				layer_apply_position(l);
+				REVEAL_TRACE("flush ns=%s offset=0\n",
+					l->layer_surface->namespace);
 			}
 }
 
@@ -924,6 +965,7 @@ reveal_reset(void)
 	if (reveal_active && globalconf.need_lazy_banning) {
 		Monitor *m;
 		reveal_release_pending = true;
+		REVEAL_TRACE("defer release pending=1\n");
 		wl_list_for_each(m, &mons, link)
 			for (i = 0; i < 4; i++)
 				wl_list_for_each(l, &m->layers[i], link) {
@@ -933,9 +975,12 @@ reveal_reset(void)
 						continue;
 					l->reveal_offset_from = l->reveal_offset_y;
 					l->reveal_releasing = true;
+					REVEAL_TRACE("defer ns=%s from=%d\n",
+						l->layer_surface->namespace, l->reveal_offset_from);
 				}
 		return;
 	}
+	REVEAL_TRACE("reset immediate (no pending switch)\n");
 	reveal_reset_now();
 }
 
@@ -955,11 +1000,16 @@ reveal_release_apply(Monitor *m, double eased)
 				continue;
 			if (!l->reveal_releasing)
 				continue;
-			if (!reveal_layer_match(l->layer_surface->namespace))
-				continue;
+			/* The release rides the surfaces captured at the deferral, NOT
+			 * the current namespace list: the reveal owner swaps the list to
+			 * the arriving space (an ordinary desktop becomes empty) as soon
+			 * as the switch settles, long before the slide ends, so gating on
+			 * the list here would strand the parked bar mid-descent. */
 			l->reveal_offset_y =
 				(int)llround(l->reveal_offset_from * (1.0 - eased));
 			layer_apply_position(l);
+			REVEAL_TRACE("release eased=%.3f ns=%s offset=%d\n",
+				eased, l->layer_surface->namespace, l->reveal_offset_y);
 		}
 }
 
@@ -968,9 +1018,43 @@ reveal_release_apply(Monitor *m, double eased)
 void
 reveal_release_flush(void)
 {
+	REVEAL_TRACE("flush pending=%d\n", reveal_release_pending);
 	if (!reveal_release_pending)
 		return;
 	reveal_reset_now();
+}
+
+/* Self-healing invariant: when a transition settles with the reveal list
+ * empty (an ordinary desktop), no layer surface may keep a park offset. A
+ * running slide or an in-flight park release owns the descent (the release
+ * flush resets the captured surfaces at the slide teardown / banning pass),
+ * so only a settled state forces a leftover back to its anchor. Logs every
+ * forced reset. */
+void
+reveal_release_stale(void)
+{
+	Monitor *m;
+	LayerSurface *l;
+	int i;
+	/* A live reveal, a running slide or an in-flight park release owns the
+	 * surfaces; only a settled, reveal-off state may hold a park offset. */
+	if (reveal_active || slide_active() || reveal_release_pending)
+		return;
+	wl_list_for_each(m, &mons, link)
+		for (i = 0; i < 4; i++)
+			wl_list_for_each(l, &m->layers[i], link) {
+				if (!l->mapped || !l->scene || !l->layer_surface->namespace)
+					continue;
+				if (l->reveal_offset_y == 0 && !l->reveal_releasing)
+					continue;
+				fprintf(stderr, "somewm: reveal: stale park offset %d on "
+					"ns=%s returned to anchor\n",
+					l->reveal_offset_y, l->layer_surface->namespace);
+				l->reveal_offset_y = 0;
+				l->reveal_offset_from = 0;
+				l->reveal_releasing = false;
+				layer_apply_position(l);
+			}
 }
 
 bool

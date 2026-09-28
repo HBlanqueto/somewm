@@ -63,6 +63,12 @@ banning_refresh(void)
     if (!slide_active())
         reveal_release_flush();
 
+    /* Settle-time self-healing: whatever the mechanism was, when the banning
+     * pass runs with no transition pending, no layer surface may hold a park
+     * offset (an ordinary desktop cannot leave one behind). Fires only when
+     * no slide/release is easing a descent, so it never snaps mid-slide. */
+    reveal_release_stale();
+
     if (!globalconf.need_lazy_banning)
         return;
 
