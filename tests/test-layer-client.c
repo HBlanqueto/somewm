@@ -38,6 +38,7 @@ static uint32_t g_keyboard_mode = 1; /* EXCLUSIVE */
 static const char *g_pointer_marker = NULL;
 static uint32_t g_anchor = 0;
 static uint32_t g_margin_left = 0, g_margin_top = 0;
+static uint32_t g_layer = ZWLR_LAYER_SHELL_V1_LAYER_TOP;
 
 /* Signal handler for clean shutdown */
 static void handle_signal(int sig) {
@@ -287,6 +288,7 @@ static const struct wl_registry_listener registry_listener = {
 static void print_usage(const char *prog) {
     fprintf(stderr, "Usage: %s [OPTIONS]\n", prog);
     fprintf(stderr, "  --namespace NAME      Layer surface namespace (default: test-layer)\n");
+    fprintf(stderr, "  --layer LAYER         Layer: background|bottom|top|overlay (default: top)\n");
     fprintf(stderr, "  --keyboard MODE       Keyboard interactivity: exclusive|on_demand|none\n");
     fprintf(stderr, "                        (default: exclusive)\n");
     fprintf(stderr, "  --pointer-marker PATH Write \"entered\\n\" to PATH on wl_pointer.enter\n");
@@ -301,6 +303,21 @@ int main(int argc, char *argv[]) {
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--namespace") == 0 && i + 1 < argc) {
             g_namespace = argv[++i];
+        } else if (strcmp(argv[i], "--layer") == 0 && i + 1 < argc) {
+            const char *layer = argv[++i];
+            if (strcmp(layer, "background") == 0) {
+                g_layer = ZWLR_LAYER_SHELL_V1_LAYER_BACKGROUND;
+            } else if (strcmp(layer, "bottom") == 0) {
+                g_layer = ZWLR_LAYER_SHELL_V1_LAYER_BOTTOM;
+            } else if (strcmp(layer, "top") == 0) {
+                g_layer = ZWLR_LAYER_SHELL_V1_LAYER_TOP;
+            } else if (strcmp(layer, "overlay") == 0) {
+                g_layer = ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY;
+            } else {
+                fprintf(stderr, "Unknown layer: %s\n", layer);
+                print_usage(argv[0]);
+                return 1;
+            }
         } else if (strcmp(argv[i], "--keyboard") == 0 && i + 1 < argc) {
             const char *mode = argv[++i];
             if (strcmp(mode, "exclusive") == 0) {
@@ -377,7 +394,7 @@ int main(int argc, char *argv[]) {
     /* Create layer surface */
     g_layer_surface = zwlr_layer_shell_v1_get_layer_surface(
         g_layer_shell, g_surface, NULL,
-        ZWLR_LAYER_SHELL_V1_LAYER_TOP, g_namespace);
+        g_layer, g_namespace);
 
     zwlr_layer_surface_v1_set_size(g_layer_surface, 100, 100);
     if (g_anchor)
